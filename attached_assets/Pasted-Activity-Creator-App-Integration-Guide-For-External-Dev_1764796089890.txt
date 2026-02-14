@@ -1,0 +1,434 @@
+Activity Creator App Integration Guide
+For External Developers Building Activity Creation Tools
+Version 1.0.0 | December 2025
+
+Quick Start
+Base URLs
+Environment	URL
+Production	https://naca.community
+Activity Editor	https://create.naca.community
+Quick Test
+# Check API is available
+curl -i https://naca.community/api/activity-editor/capabilities
+# Fetch a media file (no auth required)
+curl -i https://naca.community/api/activity-editor/media/little-bird-press/images/tea.webp
+
+Authentication
+Option 1: Session Cookie (Browser-Based)
+Users authenticate through Replit OIDC. Session cookie connect.sid is automatically included.
+
+Option 2: API Key (Server-to-Server)
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     https://naca.community/api/activity-editor/communities
+
+Note: Contact NACA administrators to obtain an API key.
+
+CORS Configuration
+All Activity Editor endpoints support cross-origin requests:
+
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PATCH, DELETE, OPTIONS
+Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept, 
+                              Authorization, X-Community-Subdomain, X-Community-Id, 
+                              X-Community-Slug
+Access-Control-Max-Age: 86400
+
+Community Context
+Specify which community you're working with using headers:
+
+Header	Example	Description
+X-Community-Id	27d9dacd-395c-49f8-ad5d-61964590b182	UUID (most reliable)
+X-Community-Subdomain	blackfeet	Subdomain name
+X-Community-Slug	blackfeet-nation	URL slug
+Priority: URL path > Headers > Subdomain > Default (Global)
+
+API Endpoints
+1. Capabilities Discovery
+Check API version and available features.
+
+curl -i https://naca.community/api/activity-editor/capabilities
+
+Response:
+
+{
+  "apiVersion": "1.0.0",
+  "lastUpdated": "2025-01-27T00:00:00Z",
+  "endpoints": {
+    "browseCommunities": {
+      "path": "/api/activity-editor/communities",
+      "method": "GET"
+    },
+    "browseMedia": {
+      "path": "/api/activity-editor/communities/:id/media",
+      "method": "GET"
+    },
+    "createDraft": {
+      "path": "/api/activity-editor/drafts",
+      "method": "POST"
+    }
+  },
+  "features": {
+    "mediaUpload": true,
+    "draftAutoSave": true,
+    "approvalWorkflow": true
+  }
+}
+
+Headers Returned:
+
+ETag - For caching
+X-API-Version - Current version
+Last-Modified - Last update time
+2. List Communities
+Get communities you have access to.
+
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     https://naca.community/api/activity-editor/communities
+
+Response:
+
+[
+  {
+    "id": "27d9dacd-395c-49f8-ad5d-61964590b182",
+    "name": "Blackfeet Nation",
+    "slug": "blackfeet-nation",
+    "subdomain": "blackfeet",
+    "isActive": true,
+    "dropboxBasePath": "/Blackfeet/Media"
+  },
+  {
+    "id": "94267867-1987-45ab-a2a3-1d97daa53006",
+    "name": "Little Bird Press",
+    "slug": "little-bird-press",
+    "subdomain": "little-bird-press",
+    "isActive": true,
+    "dropboxBasePath": "/LittleBirdPress"
+  }
+]
+
+3. Browse Community Media
+Search and browse media files in a community.
+
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     "https://naca.community/api/activity-editor/communities/27d9dacd-395c-49f8-ad5d-61964590b182/media?type=image&limit=20"
+
+Query Parameters:
+
+Parameter	Type	Default	Description
+type	string	all	image, audio, or all
+search	string	-	Search filename/description
+limit	number	50	Max results (1-200)
+offset	number	0	Pagination offset
+Response:
+
+{
+  "items": [
+    {
+      "id": "media-uuid-123",
+      "filename": "buffalo.jpg",
+      "mimeType": "image/jpeg",
+      "storagePath": "public/blackfeet/images/buffalo.jpg",
+      "thumbnailUrl": "https://naca.community/api/media/file/public/blackfeet/images/buffalo.jpg",
+      "communityId": "27d9dacd-395c-49f8-ad5d-61964590b182"
+    }
+  ],
+  "total": 150,
+  "limit": 20,
+  "offset": 0
+}
+
+4. Fetch Media Files (CORS-Enabled)
+This is the primary endpoint for loading media in external apps.
+
+# Fetch image with full CORS support
+curl -i "https://naca.community/api/activity-editor/media/little-bird-press/images/tea.webp"
+# With public/ prefix (also works)
+curl -i "https://naca.community/api/activity-editor/media/public/little-bird-press/images/tea.webp"
+
+Features:
+
+Full CORS headers for cross-origin access
+24-hour public caching
+Automatic extension fallback (tries .webp, .jpg, .png, etc.)
+Correct MIME type detection
+Response Headers:
+
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, OPTIONS
+Cache-Control: public, max-age=86400
+Content-Type: image/webp
+
+JavaScript Example:
+
+// Fetch media in browser with full CORS support
+const response = await fetch(
+  'https://naca.community/api/activity-editor/media/little-bird-press/images/tea.webp'
+);
+const blob = await response.blob();
+const imageUrl = URL.createObjectURL(blob);
+
+5. List Activities
+Get activities for a community.
+
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     "https://naca.community/api/activity-editor/communities/27d9dacd-395c-49f8-ad5d-61964590b182/activities"
+
+Query Parameters:
+
+Parameter	Type	Description
+type	string	Filter by type: flashcard, storybook, timeline, etc.
+search	string	Search by name
+Response:
+
+{
+  "activities": [
+    {
+      "id": "activity-uuid",
+      "name": "Blackfoot Animal Names",
+      "type": "flashcard",
+      "entryCount": 24,
+      "isPublished": true,
+      "boxArt": "https://...",
+      "cardBack": "https://..."
+    }
+  ],
+  "total": 5,
+  "communityId": "27d9dacd-395c-49f8-ad5d-61964590b182"
+}
+
+6. Create Activity Draft
+Create a new unpublished activity.
+
+curl -X POST \
+     -H "Authorization: Bearer YOUR_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "name": "Blackfoot Animal Names",
+       "type": "flashcard",
+       "description": "Learn animal names in Blackfoot",
+       "communityId": "27d9dacd-395c-49f8-ad5d-61964590b182",
+       "data": {
+         "cards": [
+           {
+             "indigenous": "Inniskim",
+             "english": "Buffalo Stone",
+             "imageUrl": "https://..."
+           }
+         ]
+       }
+     }' \
+     https://naca.community/api/activity-editor/drafts
+
+Activity Types:
+
+Type	Description
+flashcard	Flashcard learning activity
+storybook	Interactive storybook
+timeline	Historical timeline
+map	Geographic/cultural map
+months	Monthly calendar activity
+conversation	Conversation poster
+7. Update Activity Draft
+curl -X PATCH \
+     -H "Authorization: Bearer YOUR_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"name": "Updated Name", "data": {...}}' \
+     https://naca.community/api/activity-editor/drafts/DRAFT_ID
+
+8. Submit Draft for Approval
+curl -X POST \
+     -H "Authorization: Bearer YOUR_API_KEY" \
+     https://naca.community/api/activity-editor/drafts/DRAFT_ID/submit
+
+Response:
+
+{
+  "success": true,
+  "submission": {
+    "id": "submission-uuid",
+    "status": "pending"
+  },
+  "message": "Draft submitted for administrator approval"
+}
+
+9. Get Your Drafts
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     https://naca.community/api/activity-editor/drafts
+
+10. Get Notifications
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     "https://naca.community/api/activity-editor/notifications?unreadOnly=true"
+
+Response:
+
+{
+  "notifications": [
+    {
+      "id": "notif_123",
+      "type": "approval_status",
+      "title": "Draft Approved",
+      "message": "Your activity has been approved and published.",
+      "createdAt": "2025-01-27T12:00:00Z",
+      "read": false
+    }
+  ],
+  "unreadCount": 1
+}
+
+Real-Time WebSocket (DevSync)
+Subscribe to real-time updates for media and activity changes.
+
+Connection
+const ws = new WebSocket('wss://create.naca.community/ws/devsync');
+ws.onmessage = (event) => {
+  const message = JSON.parse(event.data);
+  
+  switch (message.type) {
+    case 'media_upload':
+      console.log('New media uploaded:', message.data.filename);
+      break;
+    case 'media_link':
+      console.log('Media linked to activity:', message.data.targetId);
+      break;
+    case 'capabilities_update':
+      console.log('API updated to version:', message.data.apiVersion);
+      break;
+  }
+};
+
+Event Types
+Event	Description
+media_upload	New media file uploaded
+media_link	Media linked to activity/entry
+media_delete	Media file deleted
+media_update	Approval status changed
+capabilities_update	API version updated
+Error Handling
+Error Response Format
+{
+  "error": "Error type",
+  "message": "Human-readable description",
+  "code": "ERROR_CODE",
+  "details": {}
+}
+
+HTTP Status Codes
+Status	Code	Description
+400	INVALID_REQUEST	Malformed request or path traversal
+401	UNAUTHORIZED	Authentication required
+403	ACCESS_DENIED	Insufficient permissions
+404	NOT_FOUND	Resource not found
+409	CONFLICT	Resource state conflict
+429	RATE_LIMITED	Too many requests
+500	INTERNAL_ERROR	Server error
+Rate Limits
+Endpoint Type	Limit
+Standard endpoints	100 requests/minute per IP
+Media upload	10 uploads/minute per user
+Search endpoints	60 requests/minute per IP
+Caching
+Endpoint	Cache Duration
+/capabilities	15 minutes (ETag supported)
+Media files	24 hours
+Community lists	No cache
+Conditional Requests
+# Use ETag for efficient polling
+curl -H "If-None-Match: \"abc123\"" \
+     https://naca.community/api/activity-editor/capabilities
+# Returns 304 Not Modified if unchanged
+
+Complete JavaScript Example
+class NacaActivityEditor {
+  constructor(apiKey) {
+    this.apiKey = apiKey;
+    this.baseUrl = 'https://naca.community';
+  }
+  async fetch(path, options = {}) {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      ...options,
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+        ...options.headers
+      }
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.message || 'API Error');
+    }
+    
+    return response.json();
+  }
+  // List communities
+  async getCommunities() {
+    return this.fetch('/api/activity-editor/communities');
+  }
+  // Browse media
+  async getMedia(communityId, options = {}) {
+    const params = new URLSearchParams(options);
+    return this.fetch(
+      `/api/activity-editor/communities/${communityId}/media?${params}`
+    );
+  }
+  // Fetch media file (returns blob)
+  async fetchMediaFile(path) {
+    const response = await fetch(
+      `${this.baseUrl}/api/activity-editor/media/${path}`
+    );
+    return response.blob();
+  }
+  // Create draft
+  async createDraft(data) {
+    return this.fetch('/api/activity-editor/drafts', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  }
+  // Update draft
+  async updateDraft(draftId, data) {
+    return this.fetch(`/api/activity-editor/drafts/${draftId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data)
+    });
+  }
+  // Submit for approval
+  async submitDraft(draftId) {
+    return this.fetch(`/api/activity-editor/drafts/${draftId}/submit`, {
+      method: 'POST'
+    });
+  }
+  // Get notifications
+  async getNotifications(unreadOnly = false) {
+    return this.fetch(
+      `/api/activity-editor/notifications?unreadOnly=${unreadOnly}`
+    );
+  }
+}
+// Usage
+const editor = new NacaActivityEditor('your-api-key');
+// Get communities and their media
+const communities = await editor.getCommunities();
+const media = await editor.getMedia(communities[0].id, { type: 'image' });
+// Create a flashcard activity
+const draft = await editor.createDraft({
+  name: 'Animal Names',
+  type: 'flashcard',
+  communityId: communities[0].id,
+  data: { cards: [] }
+});
+// Submit for review
+await editor.submitDraft(draft.id);
+
+OpenAPI Specification
+Download the full OpenAPI 3.0 specification:
+
+curl https://naca.community/api/docs/naca-api \
+     -o naca-openapi.json
+
+Support
+For API questions or integration support:
+
+Email: Contact NACA administrators
+Documentation: https://docs.naca.community
+Changelog: GET /api/activity-editor/changelog

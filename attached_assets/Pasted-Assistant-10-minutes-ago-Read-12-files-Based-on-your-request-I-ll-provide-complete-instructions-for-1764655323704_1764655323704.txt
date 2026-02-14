@@ -1,0 +1,90 @@
+Assistant
+10 minutes ago
+Read 12 files
+Based on your request, I'll provide complete instructions for integrating your components with the Replit Agent app you're developing separately.
+
+Cross-App Development Sync Instructions
+You've already implemented the WebSocket bridge infrastructure. Here's how to set it up and use it:
+
+1. Environment Configuration
+First, add the WebSocket URL to your .env file (this file is gitignored, so you'll need to create it locally):
+
+.env.example
++3
+-0
+2. Server-Side Setup
+The server-side DevSyncService is already created. Now initialize it in your main server file:
+
+server/index.ts
++8
+-3
+3. Using DevSync in Your Components
+Here's how to use the useDevSync hook in your activity components:
+
+client/src/components/ExampleSyncedComponent.tsx
++53
+-0
+4. Client-Side Environment Variables
+Add environment variables for the client:
+
+client/.env.example
++3
+-0
+5. Complete Setup Instructions
+Step-by-step guide:
+
+In Your Other Replit App (the one with the activity component):
+
+Create a WebSocket endpoint at /ws/dev-sync
+Accept connections and broadcast messages to this NACA app
+Example server code:
+import { WebSocket, WebSocketServer } from 'ws';
+const wss = new WebSocketServer({ port: 8080, path: '/ws/dev-sync' });
+wss.on('connection', (ws) => {
+  ws.on('message', (data) => {
+    // Broadcast to all connected clients
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(data);
+      }
+    });
+  });
+});
+In This NACA App:
+
+Create .env file with:
+DEV_SYNC_ENABLED=true
+DEV_SYNC_TARGET_URL=wss://your-other-repl-name.your-username.repl.co/ws/dev-sync
+Create client/.env with:
+VITE_DEV_SYNC_ENABLED=true
+VITE_DEV_SYNC_TARGET_URL=wss://your-other-repl-name.your-username.repl.co/ws/dev-sync
+Component Integration:
+
+Wrap your activity components with the useDevSync hook
+Use unique componentId for each component
+State updates will automatically sync bidirectionally
+Testing:
+
+Start both apps
+Check console for [DevSync] Connected messages
+Make changes in either app
+Verify state syncs in real-time
+6. Example: Syncing Flashcard Data
+client/src/components/SyncedFlashcardActivity.tsx
++91
+-0
+7. Debugging
+To see sync activity, check the console for:
+
+[DevSync] Connected to external app - Connection established
+[DevSync] Connection closed, reconnecting in 5s... - Reconnection attempt
+[DevSync] WebSocket error: - Connection errors
+The service automatically reconnects every 5 seconds if disconnected.
+
+Key Features:
+✅ Bidirectional real-time sync
+✅ Automatic reconnection on disconnect
+✅ Type-safe with TypeScript generics
+✅ Component-level scoping with componentId
+✅ Development-only (controlled by environment variables)
+This setup allows you to develop the activity component in your other Replit app while keeping it in sync with this NACA platform in real-time.

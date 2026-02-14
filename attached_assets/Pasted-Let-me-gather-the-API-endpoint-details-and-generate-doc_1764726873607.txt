@@ -1,0 +1,108 @@
+Let me gather the API endpoint details and generate documentation for your activity builder agent:
+
+
+Generated NACA API documentation for integration
+
+Provided documentation to agent
+Here's the API documentation you can share with your activity builder agent:
+
+NACA External Integration API
+Base URL
+https://native-tongue-lexicon-brandon612.replit.app
+
+Authentication
+Most endpoints require authentication. Pass the session cookie or use Replit's authentication flow to access protected routes.
+
+Endpoints
+1. GET /api/naca/capabilities (No Auth Required)
+Discover API version, available endpoints, and feature flags.
+
+Example:
+
+curl https://native-tongue-lexicon-brandon612.replit.app/api/naca/capabilities
+
+Response:
+
+{
+  "apiVersion": "1.0.0",
+  "lastUpdated": "2025-12-02T00:00:00Z",
+  "endpoints": {
+    "capabilities": { "path": "/api/naca/capabilities", "method": "GET" },
+    "communities": { "path": "/api/naca/communities", "method": "GET" },
+    "communityDetail": { "path": "/api/naca/communities/:communityId", "method": "GET" },
+    "browseDropbox": { "path": "/api/naca/communities/:communityId/browse-dropbox", "method": "POST" },
+    "mediaSearch": { "path": "/api/naca/media/search", "method": "GET" },
+    "activityFolder": { "path": "/api/naca/communities/:communityId/activities/:activityName/folder", "method": "GET" }
+  }
+}
+
+2. GET /api/naca/communities (Auth Required)
+List all communities with their Dropbox base paths.
+
+Response:
+
+[
+  {
+    "id": "uuid-here",
+    "name": "Blackfeet Nation",
+    "slug": "blackfeet",
+    "dropboxBasePath": "/NTA/Communities/Blackfeet"
+  }
+]
+
+3. GET /api/naca/communities/:communityId (Auth Required)
+Get detailed community info including folder structure.
+
+Parameters:
+
+communityId (path) - UUID of the community
+4. POST /api/naca/communities/:communityId/browse-dropbox (Auth Required)
+Browse Dropbox folders relative to the community's base path.
+
+Request Body:
+
+{
+  "path": "/Activities/SolveIT",
+  "limit": 100,
+  "cursor": null
+}
+
+Response:
+
+{
+  "entries": [
+    { "name": "image.png", "path": "/Activities/SolveIT/image.png", "type": "file" },
+    { "name": "audio", "path": "/Activities/SolveIT/audio", "type": "folder" }
+  ],
+  "hasMore": false,
+  "cursor": "abc123"
+}
+
+5. GET /api/naca/media/search (Auth Required)
+Search media files with filters.
+
+Query Parameters:
+
+q - Search query
+communityId - Filter by community
+type - Filter by media type (image, audio, video)
+limit - Max results (default: 50)
+6. GET /api/naca/communities/:communityId/activities/:activityName/folder (Auth Required)
+Get activity-specific folder structure for media uploads.
+
+Parameters:
+
+communityId (path) - UUID of the community
+activityName (path) - Activity folder name (e.g., "SolveIT_AS")
+7. GET /api/naca/schema/:endpointId (No Auth Required)
+Get JSON schema for a specific endpoint's request/response format.
+
+Parameters:
+
+endpointId (path) - One of: capabilities, communities, browseDropbox, mediaSearch, activityFolder
+Error Responses
+Status	Meaning
+401	Unauthorized - Authentication required
+404	Resource not found
+500	Server error
+Important: Make sure to republish this NACA app for these endpoints to work on the production URL. Currently they're only active in the development environment.

@@ -1,0 +1,731 @@
+
+# Activity Editor Integration - Build Plan
+
+## Overview
+
+This document provides a complete implementation guide for the Activity Editor to integrate with NACA's API system. The integration enables bi-directional communication for media asset discovery, activity creation, and real-time capability synchronization.
+
+---
+
+## Architecture Overview
+
+### Communication Model
+- **Authentication**: Session-based (Replit Auth with session cookies)
+- **Primary Protocol**: REST API over HTTPS
+- **Change Detection**: Polling-based with ETag support
+- **Real-time Updates**: WebSocket for media events (optional)
+
+### Key Integration Points
+1. User authentication via NACA login
+2. API capability discovery and version checking
+3. Community and media browsing
+4. Draft activity creation and submission
+5. Approval workflow tracking
+6. Notification polling for status updates
+
+---
+
+## Build Order by Dependency
+
+### Phase 1: Foundation (Days 1-3)
+
+#### 1.1 Authentication Client
+**Priority**: Critical - Required for all API access
+
+**Implementation**:
+```typescript
+// services/NacaAuthService.ts
+export class NacaAuthService {
+  private sessionCookie: string | null = null;
+  
+  async redirectToLogin(nacaBaseUrl: string): Promise<void> {
+    // Redirect user to NACA login page
+    window.location.href = `${nacaBaseUrl}/api/login`;
+  }
+  
+  async checkSession(): Promise<boolean> {
+    try {
+      const response = await fetch('/api/activity-editor/capabilities', {
+        credentials: 'include'
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+  
+  getAuthHeaders(): HeadersInit {
+    return {
+      'Content-Type': 'application/json',
+      // Session cookie automatically included with credentials: 'include'
+    };
+  }
+}
+```
+
+**Testing**:
+- Verify redirect to NACA login works
+- Confirm session cookie is set after login
+- Test automatic cookie inclusion in requests
+
+---
+
+#### 1.2 Capability Discovery Service
+**Priority**: Critical - Needed before making any API calls
+
+**Implementation**:
+```typescript
+// services/CapabilityService.ts
+interface NacaCapabilities {
+  apiVersion: string;
+  lastUpdated: string;
+  endpoints: Record<string, EndpointInfo>;
+  features: Record<string, boolean>;
+  changelog: ChangelogEntry[];
+}
+
+export class CapabilityService {
+  private currentEtag: string | null = null;
+  private capabilities: NacaCapabilities | null = null;
+  private pollInterval = 15 * 60 * 1000; // 15 minutes
+  
+  async fetchCapabilities(): Promise<{
+    changed: boolean;
+    capabilities?: NacaCapabilities;
+  }> {
+    const headers: HeadersInit = {};
+    if (this.currentEtag) {
+      headers['If-None-Match'] = this.currentEtag;
+    }
+    
+    const response = await fetch('/api/activity-editor/capabilities', {
+      headers,
+      credentials: 'include'
+    });
+    
+    if (response.status === 304) {
+      return { changed: false };
+    }
+    
+    if (response.ok) {
+      const capabilities = await response.json();
+      this.currentEtag = response.headers.get('ETag');
+      this.capabilities = capabilities;
+      return { changed: true, capabilities };
+    }
+    
+    throw new Error('Failed to fetch capabilities');
+  }
+  
+  startPolling(onUpdate: (capabilities: NacaCapabilities) => void): () => void {
+    const intervalId = setInterval(async () => {
+      const result = await this.fetchCapabilities();
+      if (result.changed && result.capabilities) {
+        onUpdate(result.capabilities);
+      }
+    }, this.pollInterval);
+    
+    // Return cleanup function
+    return () => clearInterval(intervalId);
+  }
+  
+  getEndpoint(name: string): string | null {
+    return this.capabilities?.endpoints[name]?.path || null;
+  }
+  
+  hasFeature(name: string): boolean {
+    return this.capabilities?.features[name] || false;
+  }
+}
+```
+
+**Testing**:
+- Verify initial capability fetch works
+- Test ETag caching (304 responses)
+- Confirm polling interval triggers correctly
+- Validate changelog parsing
+
+---
+
+#### 1.3 Error Handling Layer
+**Priority**: High - Prevents cascading failures
+
+**Implementation**:
+```typescript
+// services/ErrorHandler.ts
+export class NacaApiError extends Error {
+  constructor(
+    message: string,
+    public statusCode: number,
+    public needsAuth?: boolean
+  ) {
+    super(message);
+  }
+}
+
+export async function handleApiResponse<T>(
+  response: Response
+): Promise<T> {
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    
+    if (response.status === 401) {
+      throw new NacaApiError(
+        error.error || 'Not authenticated',
+        401,
+        error.needsAuth
+      );
+    }
+    
+    if (response.status === 403) {
+      throw new NacaApiError(
+        error.error || 'Access denied',
+        403
+      );
+    }
+    
+    throw new NacaApiError(
+      error.error || 'Request failed',
+      response.status
+    );
+  }
+  
+  return response.json();
+}
+```
+
+---
+
+### Phase 2: Core API Services (Days 4-7)
+
+#### 2.1 Community Service
+**Priority**: High - Required for scoped media access
+
+**Implementation**:
+```typescript
+// services/CommunityService.ts
+import { handleApiResponse } from './ErrorHandler';
+
+interface Community {
+  id: string;
+  name: string;
+  slug: string;
+  description?: string;
+}
+
+export class CommunityService {
+  async getCommunities(): Promise<Community[]> {
+    const response = await fetch('/api/activity-editor/communities', {
+      credentials: 'include'
+    });
+    return handleApiResponse(response);
+  }
+}
+```
+
+**Testing**:
+- Verify user only sees authorized communities
+- Test platform admin sees all communities
+- Confirm community data structure matches schema
+
+---
+
+#### 2.2 Media Service
+**Priority**: Critical - Core feature for asset discovery
+
+**Implementation**:
+```typescript
+// services/MediaService.ts
+interface MediaFile {
+  id: string;
+  fileName: string;
+  fileType: 'image' | 'audio';
+  storagePath: string;
+  mimeType: string;
+}
+
+interface MediaSearchParams {
+  communityId: string;
+  type?: 'image' | 'audio' | 'all';
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export class MediaService {
+  async searchMedia(params: MediaSearchParams): Promise<{
+    media: MediaFile[];
+    total: number;
+  }> {
+    const query = new URLSearchParams({
+      type: params.type || 'all',
+      limit: (params.limit || 50).toString(),
+      offset: (params.offset || 0).toString(),
+      ...(params.search && { search: params.search })
+    });
+    
+    const response = await fetch(
+      `/api/activity-editor/communities/${params.communityId}/media?${query}`,
+      { credentials: 'include' }
+    );
+    
+    return handleApiResponse(response);
+  }
+  
+  getMediaUrl(storagePath: string): string {
+    return `/api/media/${storagePath}`;
+  }
+}
+```
+
+**Testing**:
+- Test pagination (limit/offset)
+- Verify search filtering works
+- Test type filtering (image/audio)
+- Confirm media URLs are accessible
+
+---
+
+#### 2.3 Draft Service
+**Priority**: Critical - Activity creation workflow
+
+**Implementation**:
+```typescript
+// services/DraftService.ts
+interface CreateDraftParams {
+  communityId: string;
+  type: 'flashcards' | 'storybook' | 'timeline' | 'map';
+  name: string;
+  description?: string;
+  title?: string;
+  subtitle?: string;
+}
+
+interface Draft {
+  id: string;
+  isPublished: boolean;
+  uploadedBy: string;
+  createdAt: string;
+}
+
+export class DraftService {
+  async createDraft(params: CreateDraftParams): Promise<Draft> {
+    const response = await fetch('/api/activity-editor/drafts', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params)
+    });
+    
+    return handleApiResponse(response);
+  }
+  
+  async updateDraft(id: string, updates: Partial<CreateDraftParams>): Promise<Draft> {
+    const response = await fetch(`/api/activity-editor/drafts/${id}`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    });
+    
+    return handleApiResponse(response);
+  }
+  
+  async submitForApproval(draftId: string): Promise<{
+    success: boolean;
+    submission: {
+      id: string;
+      status: 'pending';
+    };
+  }> {
+    const response = await fetch(
+      `/api/activity-editor/drafts/${draftId}/submit`,
+      {
+        method: 'POST',
+        credentials: 'include'
+      }
+    );
+    
+    return handleApiResponse(response);
+  }
+  
+  async getMyDrafts(): Promise<Draft[]> {
+    const response = await fetch('/api/activity-editor/drafts', {
+      credentials: 'include'
+    });
+    
+    return handleApiResponse(response);
+  }
+}
+```
+
+**Testing**:
+- Create draft with minimal fields
+- Update draft metadata
+- Submit draft for approval
+- Verify drafts appear in user's list
+
+---
+
+### Phase 3: Notification System (Days 8-10)
+
+#### 3.1 Notification Service
+**Priority**: High - User feedback on approvals
+
+**Implementation**:
+```typescript
+// services/NotificationService.ts
+interface Notification {
+  id: string;
+  type: 'approval_status' | 'capability_update';
+  title: string;
+  message: string;
+  data?: any;
+  createdAt: string;
+  read: boolean;
+}
+
+export class NotificationService {
+  private pollInterval = 5 * 60 * 1000; // 5 minutes
+  
+  async getNotifications(unreadOnly = false): Promise<{
+    notifications: Notification[];
+    unreadCount: number;
+  }> {
+    const query = unreadOnly ? '?unreadOnly=true' : '';
+    const response = await fetch(
+      `/api/activity-editor/notifications${query}`,
+      { credentials: 'include' }
+    );
+    
+    return handleApiResponse(response);
+  }
+  
+  async markAsRead(notificationId: string): Promise<void> {
+    const response = await fetch(
+      `/api/activity-editor/notifications/${notificationId}/read`,
+      {
+        method: 'POST',
+        credentials: 'include'
+      }
+    );
+    
+    await handleApiResponse(response);
+  }
+  
+  async markAllAsRead(): Promise<void> {
+    const response = await fetch(
+      '/api/activity-editor/notifications/read-all',
+      {
+        method: 'POST',
+        credentials: 'include'
+      }
+    );
+    
+    await handleApiResponse(response);
+  }
+  
+  startPolling(onUpdate: (data: any) => void): () => void {
+    const intervalId = setInterval(async () => {
+      const result = await this.getNotifications(true);
+      if (result.unreadCount > 0) {
+        onUpdate(result);
+      }
+    }, this.pollInterval);
+    
+    return () => clearInterval(intervalId);
+  }
+}
+```
+
+**Testing**:
+- Poll for new notifications
+- Mark individual notification as read
+- Mark all notifications as read
+- Verify unread count accuracy
+
+---
+
+#### 3.2 Changelog Service
+**Priority**: Medium - API update awareness
+
+**Implementation**:
+```typescript
+// services/ChangelogService.ts
+interface ChangelogEntry {
+  version: string;
+  date: string;
+  type: 'feature' | 'endpoint' | 'breaking' | 'deprecation';
+  title: string;
+  description: string;
+  affectedEndpoints?: string[];
+}
+
+export class ChangelogService {
+  async getChangelog(sinceVersion?: string): Promise<{
+    changes: ChangelogEntry[];
+    currentVersion: string;
+    totalChanges: number;
+  }> {
+    const query = sinceVersion ? `?since=${sinceVersion}` : '';
+    const response = await fetch(
+      `/api/activity-editor/changelog${query}`,
+      { credentials: 'include' }
+    );
+    
+    return handleApiResponse(response);
+  }
+  
+  hasBreakingChanges(changes: ChangelogEntry[]): boolean {
+    return changes.some(c => c.type === 'breaking');
+  }
+}
+```
+
+---
+
+### Phase 4: UI Integration (Days 11-15)
+
+#### 4.1 Authentication UI
+**Components**:
+- Login redirect handler
+- Session state management
+- Auto-reconnect on session expiry
+
+**Implementation**:
+```typescript
+// components/AuthProvider.tsx
+import { createContext, useContext, useEffect, useState } from 'react';
+import { NacaAuthService } from '../services/NacaAuthService';
+
+interface AuthContextType {
+  isAuthenticated: boolean;
+  checkAuth: () => Promise<void>;
+  login: () => void;
+}
+
+const AuthContext = createContext<AuthContextType>(null!);
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const authService = new NacaAuthService();
+  
+  const checkAuth = async () => {
+    const isValid = await authService.checkSession();
+    setIsAuthenticated(isValid);
+    if (!isValid) {
+      authService.redirectToLogin(import.meta.env.VITE_NACA_BASE_URL);
+    }
+  };
+  
+  useEffect(() => {
+    checkAuth();
+  }, []);
+  
+  return (
+    <AuthContext.Provider value={{
+      isAuthenticated,
+      checkAuth,
+      login: () => authService.redirectToLogin(import.meta.env.VITE_NACA_BASE_URL)
+    }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export const useAuth = () => useContext(AuthContext);
+```
+
+---
+
+#### 4.2 Media Browser UI
+**Components**:
+- Community selector
+- Media grid with infinite scroll
+- Search and filter controls
+- Media preview/lightbox
+
+**Key Features**:
+- Thumbnail loading with placeholders
+- Lazy loading for performance
+- Multi-select for bulk operations
+- Type filtering (images/audio)
+
+---
+
+#### 4.3 Draft Manager UI
+**Components**:
+- Draft creation form
+- Draft list with status indicators
+- Submit for approval dialog
+- Approval status tracking
+
+---
+
+#### 4.4 Notification Center UI
+**Components**:
+- Notification bell with badge count
+- Notification list with read/unread states
+- Mark as read actions
+- Deep links to related content
+
+---
+
+### Phase 5: Advanced Features (Days 16-20)
+
+#### 5.1 WebSocket Integration (Optional)
+**Priority**: Low - Real-time updates for media changes
+
+**Implementation**:
+```typescript
+// services/DevSyncWebSocket.ts
+export class DevSyncWebSocket {
+  private ws: WebSocket | null = null;
+  
+  connect(onMediaUpdate: (event: any) => void): void {
+    this.ws = new WebSocket('wss://your-naca-instance.com/ws/devsync');
+    
+    this.ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'media_update') {
+        onMediaUpdate(data);
+      }
+    };
+  }
+  
+  disconnect(): void {
+    this.ws?.close();
+  }
+}
+```
+
+---
+
+#### 5.2 Offline Support
+**Priority**: Low - Better UX in poor connectivity
+
+**Features**:
+- Local draft storage
+- Sync queue for pending submissions
+- Conflict resolution
+
+---
+
+## Configuration
+
+### Environment Variables
+```env
+# .env
+VITE_NACA_BASE_URL=https://your-naca-instance.com
+VITE_CAPABILITY_POLL_INTERVAL=900000  # 15 minutes
+VITE_NOTIFICATION_POLL_INTERVAL=300000  # 5 minutes
+```
+
+---
+
+## Testing Strategy
+
+### Unit Tests
+- Service methods (mocked fetch)
+- Error handling edge cases
+- Data transformation utilities
+
+### Integration Tests
+- Full authentication flow
+- API capability discovery
+- Draft creation → submission → approval
+- Media search with various filters
+
+### E2E Tests
+- User logs in → browses media → creates draft → submits
+- Notification polling and display
+- Session expiry and re-authentication
+
+---
+
+## Deployment Checklist
+
+- [ ] Environment variables configured
+- [ ] NACA base URL points to production
+- [ ] CORS configured on NACA side
+- [ ] Session cookie domain matches
+- [ ] Error tracking (Sentry/similar) integrated
+- [ ] Analytics events tracked
+- [ ] User feedback mechanism in place
+
+---
+
+## API Reference Summary
+
+### Core Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/activity-editor/capabilities` | GET | Discover API features |
+| `/api/activity-editor/communities` | GET | List accessible communities |
+| `/api/activity-editor/communities/:id/media` | GET | Search media library |
+| `/api/activity-editor/drafts` | GET/POST | Manage drafts |
+| `/api/activity-editor/drafts/:id` | PATCH | Update draft |
+| `/api/activity-editor/drafts/:id/submit` | POST | Submit for approval |
+| `/api/activity-editor/notifications` | GET | Get notifications |
+| `/api/activity-editor/changelog` | GET | Get API changes |
+
+### Authentication
+All requests require `credentials: 'include'` to send session cookie.
+
+### Rate Limiting
+- Capability polling: Every 15 minutes
+- Notification polling: Every 5 minutes
+- API requests: No explicit limit (use reasonable throttling)
+
+---
+
+## Support & Troubleshooting
+
+### Common Issues
+
+**401 Unauthorized**
+- Check session cookie is set
+- Verify CORS allows credentials
+- Re-authenticate if session expired
+
+**403 Forbidden**
+- User may not have community access
+- Check user role/permissions
+
+**404 Not Found**
+- Verify endpoint URL matches capabilities
+- Check resource ID is valid
+
+**Network Errors**
+- Implement retry logic with exponential backoff
+- Check NACA service status
+
+---
+
+## Future Enhancements
+
+1. **Batch Operations**: Create multiple drafts at once
+2. **Templates**: Pre-configured activity templates
+3. **Collaboration**: Multi-user draft editing
+4. **Analytics**: Track usage and popular media
+5. **Advanced Search**: Semantic media search
+6. **Version Control**: Draft revision history
+
+---
+
+## Contact & Resources
+
+- **API Documentation**: See `docs/ACTIVITY_EDITOR_INTEGRATION.md`
+- **Testing Guide**: See `docs/ACTIVITY_EDITOR_TESTING.md`
+- **Support**: Contact NACA platform team
+
+---
+
+## Version History
+
+- **v1.0.0** (2025-01-27): Initial API release
+  - Core endpoints for communities, media, drafts
+  - Approval workflow
+  - Notification system
+  - Changelog tracking

@@ -1,0 +1,190 @@
+**Purpose:** Check current API version and available features
+
+
+
+## Cross-Origin Setup
+
+### CORS Configuration
+
+NACA allows Activity Editor requests from these origins:
+- `https://indigamate-studio.replit.app` (production)
+- `http://localhost:5173` (development)
+
+All `/api/activity-editor/*` endpoints include CORS headers:
+- `Access-Control-Allow-Origin`: Whitelisted origin
+- `Access-Control-Allow-Credentials`: true
+- `Access-Control-Allow-Headers`: Content-Type, Authorization, X-Subdomain, X-Community-Subdomain
+
+### Subdomain Headers
+
+When accessing community-specific resources from a different domain, include the community subdomain in headers:
+
+```javascript
+fetch('https://naca-domain.com/api/activity-editor/communities/xyz/media', {
+  headers: {
+    'X-Subdomain': 'blackfeet',
+    'Authorization': 'Bearer YOUR_TOKEN_HERE'
+  },
+  credentials: 'include'
+})
+```
+
+## Authentication Methods
+
+### Option 1: Token-Based (Recommended for Cross-Origin)
+
+**Step 1: Generate Token in NACA**
+```javascript
+// User must be logged into NACA first
+POST /api/activity-editor/auth/token
+
+Response:
+{
+  "token": "eyJhbGciOiJIUzI1NiIs...",
+  "expiresIn": "24h",
+  "user": {
+    "id": "user-uuid",
+    "email": "user@example.com",
+    "role": "platform_administrator"
+  }
+}
+```
+
+**Step 2: Use Token in Activity Editor**
+```javascript
+// Include token in Authorization header
+fetch('/api/activity-editor/capabilities', {
+  headers: {
+    'Authorization': `Bearer ${token}`
+  }
+})
+```
+
+### Option 2: Session Cookies (Same-Domain or Iframe)
+
+If Activity Editor is embedded as an iframe under NACA's domain, session cookies work automatically:
+
+```html
+<!-- In NACA admin panel -->
+<iframe src="https://naca-domain.com/activity-editor" />
+```
+
+No additional authentication needed - cookies are shared.
+
+### Option 3: Iframe with Embedded Token
+
+For cross-domain iframes, generate a token-embedded URL:
+
+
+## WebSocket Integration
+
+### Media Updates (Real-Time)
+
+NACA provides a WebSocket endpoint for real-time media library updates:
+
+**Endpoint:** `wss://naca-domain.com/ws/dev-sync`
+
+**Authentication:** Include token as query parameter
+```javascript
+const ws = new WebSocket(`wss://naca-domain.com/ws/dev-sync?token=${token}`);
+
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  
+  if (data.type === 'media_created') {
+    console.log('New media file:', data.media);
+    // Update Activity Editor media library
+  }
+  
+  if (data.type === 'media_deleted') {
+    console.log('Media deleted:', data.mediaId);
+    // Remove from Activity Editor cache
+  }
+};
+```
+
+**Message Types:**
+- `media_created`: New media file uploaded
+- `media_updated`: Media metadata changed
+- `media_deleted`: Media file removed
+- `capability_update`: API version or features changed
+
+### Approval Status Updates
+
+Activity Editor can subscribe to approval notifications via polling:
+
+```javascript
+// Poll every 30 seconds
+setInterval(async () => {
+  const response = await fetch('/api/activity-editor/notifications?unreadOnly=true', {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  const { notifications, unreadCount } = await response.json();
+  
+  notifications.forEach(notif => {
+    if (notif.type === 'approval_status') {
+      // Show notification to user
+      showToast(notif.title, notif.message);
+    }
+  });
+}, 30000);
+```
+
+## Media Access
+
+### Authentication for Media URLs
+
+Media files require authentication. Two options:
+
+**Option 1: Include credentials**
+```javascript
+<img 
+  src="https://naca-domain.com/api/media/public/community/image.png"
+  crossOrigin="use-credentials"
+/>
+```
+
+**Option 2: Proxy through Activity Editor**
+```javascript
+// Activity Editor backend proxies with token
+app.get('/proxy/media/:path', async (req, res) => {
+  const response = await fetch(`https://naca-domain.com/api/media/${req.params.path}`, {
+    headers: {
+      'Authorization': `Bearer ${nacaToken}`
+    }
+  });
+  
+  const buffer = await response.arrayBuffer();
+  res.set('Content-Type', response.headers.get('content-type'));
+  res.send(Buffer.from(buffer));
+});
+```
+
+### Media CORS Headers
+
+NACA sets these headers on `/api/media/*` endpoints:
+- `Access-Control-Allow-Origin`: Whitelisted Activity Editor origin
+- `Access-Control-Allow-Credentials`: true
+- `Cache-Control`: public, max-age=31536000 (1 year)
+
+
+
+```javascript
+// In NACA
+POST /api/activity-editor/auth/iframe-url
+Body: {
+  "baseUrl": "https://indigamate-studio.replit.app",
+  "communitySlug": "blackfeet"
+}
+
+Response:
+{
+  "iframeUrl": "https://indigamate-studio.replit.app?token=eyJ...&community=blackfeet"
+}
+```
+
+Activity Editor extracts the token from query params and authenticates.
+
+**Polling Recommended:** Every 15 minutes
+
+**Response:**

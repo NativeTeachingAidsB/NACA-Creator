@@ -1,0 +1,315 @@
+NACA Activity Center Integration Guide
+Base Configuration
+// Configuration
+const NACA_BASE_URL = 'https://native-tongue-lexicon-brandon612.replit.app';
+const API_KEY = process.env.ACTIVITY_EDITOR_API_KEY; // Your API key from NACA
+const headers = {
+  'Authorization': `Bearer ${API_KEY}`,
+  'Content-Type': 'application/json'
+};
+
+1. Get All Communities
+Endpoint: GET /api/activity-editor/communities
+
+async function getAllCommunities() {
+  const response = await fetch(`${NACA_BASE_URL}/api/activity-editor/communities`, {
+    method: 'GET',
+    headers
+  });
+  
+  if (!response.ok) {
+    throw new Error(`Failed to fetch communities: ${response.status}`);
+  }
+  
+  const data = await response.json();
+  return data.communities;
+}
+
+Response Format:
+
+{
+  "communities": [
+    {
+      "id": "27d9dacd-395c-49f8-ad5d-61964590b182",
+      "name": "Global",
+      "slug": "global",
+      "subdomain": null,
+      "description": "Global community for shared content",
+      "logoUrl": null,
+      "badge": null,
+      "isActive": true
+    },
+    {
+      "id": "94267867-1987-45ab-a2a3-1d97daa53006",
+      "name": "Little Bird Press",
+      "slug": "little-bird-press",
+      "subdomain": "little-bird-press",
+      "description": "",
+      "logoUrl": null,
+      "badge": null,
+      "isActive": true
+    }
+  ],
+  "total": 2,
+  "apiVersion": "1.0.0"
+}
+
+2. Get Activities for a Community
+Endpoint: GET /api/activity-editor/communities/:communityId/activities
+
+Query Parameters:
+
+Parameter	Type	Description
+type	string	Filter by activity type: flashcard, storybook, etc.
+search	string	Search term for name/type
+async function getCommunityActivities(communityId, options = {}) {
+  const params = new URLSearchParams();
+  if (options.type) params.append('type', options.type);
+  if (options.search) params.append('search', options.search);
+  
+  const url = `${NACA_BASE_URL}/api/activity-editor/communities/${communityId}/activities?${params}`;
+  
+  const response = await fetch(url, { method: 'GET', headers });
+  
+  if (!response.ok) {
+    throw new Error(`Failed to fetch activities: ${response.status}`);
+  }
+  
+  return response.json();
+}
+
+Response Format:
+
+{
+  "activities": [
+    {
+      "id": "activity-uuid",
+      "name": "Animal Names Flashcards",
+      "type": "flashcard",
+      "description": "Learn animal names in the indigenous language",
+      "communityId": "community-uuid",
+      "status": "published",
+      "createdAt": "2025-01-15T10:00:00Z"
+    }
+  ],
+  "total": 10,
+  "apiVersion": "1.0.0"
+}
+
+3. Get Dictionaries for a Community
+Endpoint: GET /api/naca/communities/:communityId/dictionaries
+
+async function getCommunityDictionaries(communityId) {
+  const url = `${NACA_BASE_URL}/api/naca/communities/${communityId}/dictionaries`;
+  
+  const response = await fetch(url, { method: 'GET', headers });
+  
+  if (!response.ok) {
+    throw new Error(`Failed to fetch dictionaries: ${response.status}`);
+  }
+  
+  return response.json();
+}
+
+Response Format:
+
+{
+  "dictionaries": [
+    {
+      "id": "d08fae7b-7b82-4dce-a799-1a404795d06f",
+      "name": "Blackfoot Dictionary",
+      "communityId": "community-uuid",
+      "indigenousLanguage": "Blackfoot",
+      "entryCount": 5000
+    }
+  ]
+}
+
+4. Get Dictionary Entries (with Pagination)
+Endpoint: GET /api/naca/communities/:communityId/dictionaries/:dictionaryId/entries
+
+Query Parameters:
+
+Parameter	Type	Default	Description
+search	string	-	Search term for word/translation
+category	string	-	Filter by category
+limit	number	50	Max results per page
+offset	number	0	Pagination offset
+async function getDictionaryEntries(communityId, dictionaryId, options = {}) {
+  const params = new URLSearchParams();
+  params.append('limit', options.limit || 50);
+  params.append('offset', options.offset || 0);
+  if (options.search) params.append('search', options.search);
+  if (options.category) params.append('category', options.category);
+  
+  const url = `${NACA_BASE_URL}/api/naca/communities/${communityId}/dictionaries/${dictionaryId}/entries?${params}`;
+  
+  const response = await fetch(url, { method: 'GET', headers });
+  
+  if (!response.ok) {
+    throw new Error(`Failed to fetch entries: ${response.status}`);
+  }
+  
+  return response.json();
+}
+// Fetch ALL entries with pagination
+async function getAllDictionaryEntries(communityId, dictionaryId) {
+  const allEntries = [];
+  let offset = 0;
+  const limit = 100;
+  let hasMore = true;
+  
+  while (hasMore) {
+    const result = await getDictionaryEntries(communityId, dictionaryId, { limit, offset });
+    allEntries.push(...result.entries);
+    
+    offset += limit;
+    hasMore = result.entries.length === limit;
+  }
+  
+  return allEntries;
+}
+
+Response Format:
+
+{
+  "entries": [
+    {
+      "id": "entry-uuid",
+      "indigenousWord": "nitáísska",
+      "englishTranslation": "hello",
+      "category": "Greetings",
+      "partOfSpeech": "interjection",
+      "pronunciation": "ni-TAI-ska",
+      "audioUrl": "https://...",
+      "exampleSentence": "Nitáísska, nína!",
+      "exampleTranslation": "Hello, friend!",
+      "culturalNotes": "Traditional greeting"
+    }
+  ],
+  "total": 5000,
+  "limit": 50,
+  "offset": 0
+}
+
+5. Complete Integration Example
+/**
+ * Fetches all communities with their activities and dictionary content
+ */
+async function fetchAllNACAContent() {
+  const result = {
+    communities: [],
+    fetchedAt: new Date().toISOString()
+  };
+  
+  try {
+    // Step 1: Get all communities
+    const communities = await getAllCommunities();
+    console.log(`Found ${communities.length} communities`);
+    
+    // Step 2: For each community, get activities and dictionaries
+    for (const community of communities) {
+      console.log(`Processing community: ${community.name}`);
+      
+      const communityData = {
+        ...community,
+        activities: [],
+        dictionaries: []
+      };
+      
+      // Get activities
+      try {
+        const activitiesResult = await getCommunityActivities(community.id);
+        communityData.activities = activitiesResult.activities || [];
+        console.log(`  - Found ${communityData.activities.length} activities`);
+      } catch (err) {
+        console.warn(`  - Failed to fetch activities: ${err.message}`);
+      }
+      
+      // Get dictionaries and entries
+      try {
+        const dictionariesResult = await getCommunityDictionaries(community.id);
+        const dictionaries = dictionariesResult.dictionaries || [];
+        
+        for (const dictionary of dictionaries) {
+          console.log(`  - Processing dictionary: ${dictionary.name}`);
+          
+          // Get entries for this dictionary
+          const entries = await getAllDictionaryEntries(community.id, dictionary.id);
+          
+          communityData.dictionaries.push({
+            ...dictionary,
+            entries: entries
+          });
+          
+          console.log(`    - Fetched ${entries.length} entries`);
+        }
+      } catch (err) {
+        console.warn(`  - Failed to fetch dictionaries: ${err.message}`);
+      }
+      
+      result.communities.push(communityData);
+    }
+    
+    return result;
+    
+  } catch (error) {
+    console.error('Failed to fetch NACA content:', error);
+    throw error;
+  }
+}
+// Run the integration
+fetchAllNACAContent()
+  .then(data => {
+    console.log('Successfully fetched all NACA content');
+    console.log(`Total communities: ${data.communities.length}`);
+    // Process or store the data as needed
+  })
+  .catch(err => {
+    console.error('Integration failed:', err);
+    process.exit(1);
+  });
+
+Error Handling
+Status Code	Meaning	Action
+200	Success	Process data
+401	Unauthorized	Check API key is valid
+404	Not found	Community/dictionary doesn't exist
+429	Rate limited	Wait and retry with exponential backoff
+500	Server error	Retry with exponential backoff
+async function fetchWithRetry(url, options, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      
+      if (response.status === 429 || response.status >= 500) {
+        if (attempt < maxRetries) {
+          const delay = Math.pow(2, attempt) * 1000; // Exponential backoff
+          console.log(`Retrying in ${delay}ms...`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+      }
+      
+      return response;
+    } catch (err) {
+      if (attempt === maxRetries) throw err;
+    }
+  }
+}
+
+cURL Examples for Testing
+# Set your API key
+export ACTIVITY_EDITOR_API_KEY="your-api-key-here"
+# 1. List all communities
+curl -H "Authorization: Bearer $ACTIVITY_EDITOR_API_KEY" \
+  "https://native-tongue-lexicon-brandon612.replit.app/api/activity-editor/communities"
+# 2. Get activities for a community
+curl -H "Authorization: Bearer $ACTIVITY_EDITOR_API_KEY" \
+  "https://native-tongue-lexicon-brandon612.replit.app/api/activity-editor/communities/27d9dacd-395c-49f8-ad5d-61964590b182/activities"
+# 3. Get dictionaries for a community  
+curl -H "Authorization: Bearer $ACTIVITY_EDITOR_API_KEY" \
+  "https://native-tongue-lexicon-brandon612.replit.app/api/naca/communities/27d9dacd-395c-49f8-ad5d-61964590b182/dictionaries"
+# 4. Get dictionary entries (paginated)
+curl -H "Authorization: Bearer $ACTIVITY_EDITOR_API_KEY" \
+  "https://native-tongue-lexicon-brandon612.replit.app/api/naca/communities/27d9dacd-395c-49f8-ad5d-61964590b182/dictionaries/d08fae7b-7b82-4dce-a799-1a404795d06f/entries?limit=50&offset=0

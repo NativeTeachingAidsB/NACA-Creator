@@ -1,0 +1,988 @@
+Animate UI/UX Feature Implementation Plan
+Executive Summary
+This document outlines the implementation plan for integrating Adobe Animate-style features into the Activity Editor, with a focus on keyboard shortcuts, object manipulation, and media library integration that mirrors the Animate workflow.
+
+1. Adobe Animate Feature Analysis
+1.1 Core Workflow Features
+Timeline & Animation:
+
+Frame-by-frame animation control
+Tweening (motion, shape, classic)
+Keyframe editing
+Timeline scrubbing
+Onion skinning for animation preview
+Object Manipulation:
+
+Free Transform tool (scale, rotate, skew)
+Registration point control
+Align & distribute tools
+Snap to guides/grid
+Object grouping/ungrouping
+Drawing & Editing:
+
+Vector drawing tools (pen, brush, shapes)
+Fill & stroke controls
+Color picker with swatches
+Gradient editor
+Media Management:
+
+Library panel with folders
+Symbol creation & instances
+Import assets (images, audio, video)
+Asset reuse across frames/scenes
+Publishing:
+
+Export to various formats (HTML5, video, sprite sheets)
+Optimization settings
+Platform-specific exports
+1.2 Keyboard Shortcuts (Illustrator-Style)
+Action	Shortcut	Implementation Priority
+Pan (Hand Tool)	Spacebar (hold)	HIGH
+Zoom In/Out	Z + drag up/down	HIGH
+Duplicate	Alt/Option + drag	HIGH
+Selection Tool	V	MEDIUM
+Direct Selection	A	MEDIUM
+Free Transform	Q	MEDIUM
+Pen Tool	P	LOW (Phase 6)
+Rectangle Tool	M	LOW (Phase 6)
+Undo/Redo	Cmd/Ctrl + Z/Shift+Z	HIGH
+Group	Cmd/Ctrl + G	HIGH
+Ungroup	Cmd/Ctrl + Shift + G	HIGH
+Bring Forward	Cmd/Ctrl + ]	MEDIUM
+Send Backward	Cmd/Ctrl + [	MEDIUM
+Bring to Front	Cmd/Ctrl + Shift + ]	MEDIUM
+Send to Back	Cmd/Ctrl + Shift + [	MEDIUM
+2. NACA Platform Integration
+2.1 Dropbox Community Structure
+Based on the NACA platform requirements:
+
+Dropbox/
+└── [Community_Name]/
+    ├── Audio/
+    │   ├── vocabulary/      # Word pronunciations
+    │   ├── pronunciation/   # Phonetic examples
+    │   └── cultural/        # Cultural context audio
+    ├── Images/
+    │   ├── vocabulary/      # Word illustrations
+    │   ├── cultural/        # Cultural imagery
+    │   └── activities/      # Activity-specific assets
+    ├── Vocabulary/
+    │   ├── core_words.json
+    │   ├── phrases.json
+    │   └── categories/
+    └── Activities/
+        └── custom_activities/
+2.2 Media Library Panel Requirements
+Features Needed:
+
+Community Selector - Filter by language community
+Search & Filter - Full-text search, type filters, category filters
+Grid/List View - Toggle between thumbnail grid and detailed list
+Drag-and-Drop - Drag assets from library to canvas
+Preview - Audio playback, image zoom, video preview
+Asset Management - Upload, categorize, tag assets
+Caching - Local cache for offline editing
+2.3 NACA API Integration Points
+Required API Endpoints (from NACA Host):
+
+// Communities
+GET /api/naca/communities
+Response: Community[]
+// Media Assets
+GET /api/naca/communities/{id}/media?type=audio&category=vocabulary
+Response: MediaAsset[]
+// Search
+GET /api/naca/media/search?q=greeting&community={id}
+Response: MediaAsset[]
+// Upload
+POST /api/naca/media/upload
+Body: FormData (file, communityId, category, tags)
+// Vocabulary
+GET /api/naca/communities/{id}/vocabulary
+Response: VocabularySet[]
+3. Implementation Phases
+Phase 2: Editor UX Infrastructure (IMMEDIATE - Week 1)
+2.1 Panel System Architecture
+Left Panel Structure:
+
+┌─────────────────────────┐
+│ Project Navigator       │ ← Collapsible
+├─────────────────────────┤
+│ Layer Hierarchy         │ ← Collapsible
+├─────────────────────────┤
+│ Scene Manager           │ ← Collapsible
+└─────────────────────────┘
+Right Panel Structure:
+
+┌─────────────────────────┐
+│ Attributes              │ ← Collapsible
+├─────────────────────────┤
+│ Triggers                │ ← Collapsible
+├─────────────────────────┤
+│ Media Library           │ ← Collapsible (NEW)
+├─────────────────────────┤
+│ Vocabulary              │ ← Collapsible
+└─────────────────────────┘
+Implementation Tasks:
+
+Resizable Panels
+
+Use react-resizable-panels library
+Persist panel widths to localStorage
+Min/max width constraints (200px - 600px)
+Smooth resize animations
+Keyboard Shortcuts
+
+Tab: Toggle left panel
+: Toggle right panel
+Cmd/Ctrl + 1-9: Jump to specific palettes
+Escape: Close all panels
+Panel State Management
+
+Store collapse state per palette
+Auto-collapse others in accordion mode
+Remember user's last workspace layout
+2.2 Keyboard Shortcut System
+Core Shortcuts to Implement:
+
+// Canvas Navigation
+{
+  key: 'Space',
+  hold: true,
+  action: 'enablePanMode',
+  description: 'Pan canvas (hold Spacebar)'
+},
+{
+  key: 'z',
+  action: 'enableZoomMode',
+  description: 'Zoom tool (drag up/down)'
+},
+// Object Manipulation
+{
+  key: 'Alt+Drag',
+  action: 'duplicateObject',
+  description: 'Duplicate object'
+},
+{
+  key: 'Cmd+G',
+  action: 'groupSelection',
+  description: 'Group selected objects'
+},
+{
+  key: 'Cmd+Shift+G',
+  action: 'ungroupSelection',
+  description: 'Ungroup selection'
+},
+// Layer Order
+{
+  key: 'Cmd+]',
+  action: 'bringForward',
+  description: 'Bring forward one layer'
+},
+{
+  key: 'Cmd+[',
+  action: 'sendBackward',
+  description: 'Send backward one layer'
+},
+{
+  key: 'Cmd+Shift+]',
+  action: 'bringToFront',
+  description: 'Bring to front'
+},
+{
+  key: 'Cmd+Shift+[',
+  action: 'sendToBack',
+  description: 'Send to back'
+}
+Phase 3: Object Manipulation (Week 2)
+3.1 Canvas Interaction Modes
+Pan Mode (Spacebar):
+
+Cursor changes to hand icon
+Click-drag moves canvas viewport
+Release Spacebar returns to previous tool
+Works in any tool mode
+Zoom Mode (Z key):
+
+Cursor changes to magnifying glass
+Drag up = zoom in, drag down = zoom out
+Click without drag = zoom to cursor position
+Smooth zoom animations (0.2s duration)
+Object Duplication (Alt+Drag):
+
+Hold Alt while dragging selected object
+Creates duplicate at new position
+Maintains all properties (classes, tags, triggers)
+Visual feedback (ghost outline during drag)
+3.2 Transform Controls
+Rotation Handles:
+
+Corner handles for rotation
+Visual rotation degree indicator
+Snap to 15° increments (hold Shift)
+Registration point as rotation pivot
+Numeric input in Attributes panel
+Registration Point Control:
+
+Draggable pivot point (crosshair icon)
+Preset positions: center, corners (TL, TR, BL, BR), edges (T, R, B, L)
+Visual indicator on selected object
+Affects rotation and scaling behavior
+3.3 Multi-Select Operations
+Selection Methods:
+
+Shift+Click to add/remove from selection
+Drag marquee to select multiple
+Cmd/Ctrl+A to select all on screen
+Bulk Operations:
+
+Align: left, center, right, top, middle, bottom
+Distribute: horizontal, vertical spacing
+Match size: width, height, both
+Group/ungroup selected objects
+Phase 4: Language Input Features (Week 3)
+4.1 Character Picker Integration
+UI Design:
+
+Floating palette (keyboard shortcut: Ctrl+Shift+C)
+Grid layout with categories (diacritics, IPA, symbols)
+Recently used section (last 10 characters)
+Search by Unicode name
+Click to insert at cursor position
+Supported Character Sets:
+
+Common diacritics: á é í ó ú ñ ü ç
+IPA symbols: ə ʃ ʒ θ ð ŋ
+Indigenous language characters (configurable per community)
+4.2 Auto-Complete for Vocabulary
+Features:
+
+Type-ahead suggestions from vocabulary database
+Fuzzy matching for misspellings
+Category-filtered suggestions
+Arrow keys to navigate, Enter to select
+Recent entries history (per session)
+Phase 5: NACA Media Integration (Week 3-4)
+5.1 Media Library Panel UI
+Layout Components:
+
+┌──────────────────────────────────┐
+│ Community: [Plains_Cree ▼]       │
+├──────────────────────────────────┤
+│ 🔍 Search media...               │
+├──────────────────────────────────┤
+│ Type: [All ▼] Category: [All ▼] │
+│ [Grid] [List]                    │
+├──────────────────────────────────┤
+│ ┌────┐ ┌────┐ ┌────┐ ┌────┐    │
+│ │img │ │img │ │🎵  │ │img │    │
+│ └────┘ └────┘ └────┘ └────┘    │
+│ word1  word2  audio1 phrase1    │
+└──────────────────────────────────┘
+Interaction Features:
+
+Drag asset from library → canvas creates object
+Drag asset → existing object replaces imageUrl/audioUrl
+Double-click audio to preview playback
+Right-click → properties, download, delete
+5.2 Asset Integration Workflow
+Drag-and-Drop Behavior:
+
+Image Assets:
+
+Creates new GameObject with bounds set to image dimensions
+Sets imageUrl to asset path
+Auto-generates customId from filename
+Adds category tag
+Audio Assets:
+
+If dropped on existing object: sets audioUrl
+If dropped on canvas: creates invisible audio trigger zone
+Shows waveform preview in Attributes panel
+Video Assets:
+
+Creates video object with playback controls
+Thumbnail preview on canvas
+Play/pause trigger setup
+5.3 Local Caching Strategy
+Cache Management:
+
+attached_assets/
+└── communities/
+    └── [Community_Name]/
+        ├── audio/
+        │   ├── vocabulary/
+        │   └── cultural/
+        ├── images/
+        │   ├── vocabulary/
+        │   └── cultural/
+        └── .cache_manifest.json
+Manifest Format:
+
+{
+  "version": "1.0",
+  "lastSync": "2025-01-01T12:00:00Z",
+  "assets": [
+    {
+      "id": "asset-123",
+      "type": "audio",
+      "category": "vocabulary",
+      "filename": "hello.mp3",
+      "dropboxPath": "/Plains_Cree/Audio/vocabulary/hello.mp3",
+      "localPath": "./communities/Plains_Cree/audio/vocabulary/hello.mp3",
+      "cachedAt": "2025-01-01T11:00:00Z",
+      "fileSize": 45632,
+      "hash": "sha256:abc123..."
+    }
+  ]
+}
+4. Technical Specifications
+4.1 New Components to Build
+GameCanvas Enhancements:
+
+// client/src/components/editor/GameCanvas.tsx
+interface CanvasMode {
+  type: 'select' | 'pan' | 'zoom' | 'draw';
+  isActive: boolean;
+  cursor: CSSCursor;
+}
+interface TransformHandles {
+  rotation: boolean;
+  scale: boolean;
+  registrationPoint: { x: number; y: number };
+}
+MediaLibraryPanel (already created, needs enhancement):
+
+// client/src/components/editor/MediaLibraryPanel.tsx
+interface MediaLibraryProps {
+  onAssetDrop: (asset: MediaAsset, position: Point) => void;
+  onAssetAssign: (asset: MediaAsset, objectId: string) => void;
+  selectedCommunity?: string;
+}
+KeyboardShortcutManager:
+
+// client/src/hooks/use-keyboard-shortcuts.ts
+interface ShortcutConfig {
+  key: string;
+  modifiers?: ('Cmd' | 'Ctrl' | 'Shift' | 'Alt')[];
+  hold?: boolean;
+  action: string;
+  description: string;
+  enabled?: boolean;
+}
+4.2 State Management Updates
+Canvas State:
+
+interface CanvasState {
+  mode: CanvasMode;
+  zoom: number;
+  pan: { x: number; y: number };
+  selection: string[]; // object IDs
+  clipboard: GameObject[];
+  snapToGrid: boolean;
+  showGuides: boolean;
+}
+Media Library State:
+
+interface MediaLibraryState {
+  selectedCommunity: string | null;
+  searchTerm: string;
+  filters: {
+    type: 'all' | 'audio' | 'image' | 'video';
+    category: string;
+  };
+  viewMode: 'grid' | 'list';
+  cachedAssets: Map<string, MediaAsset>;
+}
+4.3 API Route Extensions
+Server Routes to Add:
+
+// server/routes.ts
+// Media Library
+app.get('/api/communities', async (req, res) => {
+  const communities = await mediaService.getCommunities();
+  res.json(communities);
+});
+app.get('/api/media', async (req, res) => {
+  const { communityId, type, category } = req.query;
+  const assets = await mediaService.getMediaAssets(
+    communityId as string,
+    type as string,
+    category as string
+  );
+  res.json(assets);
+});
+app.post('/api/media/cache', async (req, res) => {
+  const asset = req.body as MediaAsset;
+  const localPath = await mediaService.cacheAsset(asset);
+  res.json({ success: true, localPath });
+});
+5. UI/UX Design Specifications
+5.1 Animate-Style Visual Language
+Color Palette:
+
+Canvas background: #2b2b2b (dark gray)
+Panel backgrounds: #1e1e1e (darker gray)
+Selected objects: #00a8ff (bright blue outline)
+Hover state: #4a4a4a (medium gray)
+Registration point: #ff0066 (magenta crosshair)
+Rotation handle: #00ff88 (green circle)
+Typography:
+
+UI labels: Inter 12px, 500 weight
+Panel headers: Inter 14px, 600 weight
+Monospace values: JetBrains Mono 11px (for coordinates, sizes)
+Spacing:
+
+Panel padding: 12px
+Palette gap: 8px
+Button spacing: 4px
+Icon size: 16px × 16px
+5.2 Cursor States
+const CursorStates = {
+  default: 'default',
+  pan: 'grab',
+  panning: 'grabbing',
+  zoom: 'zoom-in',
+  zoomOut: 'zoom-out',
+  rotate: 'url(/cursors/rotate.svg), auto',
+  resize: 'nwse-resize', // varies by handle
+  text: 'text',
+  crosshair: 'crosshair'
+};
+5.3 Animation Timing
+Smooth Transitions:
+
+Panel resize: 0.2s cubic-bezier(0.4, 0, 0.2, 1)
+Palette collapse: 0.15s ease-in-out
+Zoom: 0.2s cubic-bezier(0.4, 0, 0.2, 1)
+Pan: No animation (instant response)
+Object drag: No animation (instant response)
+6. Testing Requirements
+6.1 Keyboard Shortcut Testing
+Test Cases:
+
+Spacebar hold activates pan mode, release deactivates
+Z key activates zoom, drag up/down zooms correctly
+Alt+Drag duplicates object at correct position
+Cmd+G groups selected objects
+All shortcuts work with Cmd (Mac) and Ctrl (Windows)
+6.2 Media Library Testing
+Test Cases:
+
+Community selector loads all communities
+Search filters assets by filename and tags
+Type/category filters work correctly
+Drag-and-drop creates objects with correct properties
+Local cache persists across sessions
+Cache invalidation works on Dropbox changes
+6.3 Transform Testing
+Test Cases:
+
+Rotation handle rotates around registration point
+Shift+Rotate snaps to 15° increments
+Registration point draggable to any position
+Multi-select maintains relative positions during transform
+Undo/redo works for all transform operations
+7. Documentation Deliverables
+7.1 User Guide
+Sections:
+
+Keyboard Shortcuts Reference
+Canvas Navigation (Pan, Zoom)
+Object Manipulation (Rotate, Scale, Duplicate)
+Media Library Usage
+Character Picker Guide
+Vocabulary Integration
+7.2 Developer Guide
+Sections:
+
+Component Architecture
+State Management Patterns
+NACA API Integration
+Local Caching Strategy
+Testing Guidelines
+8. Timeline & Milestones
+Week 1: Panel System & Shortcuts
+Day 1-2: Resizable panel implementation
+Day 3-4: Keyboard shortcut system
+Day 5: Panel state persistence
+Week 2: Object Manipulation
+Day 1-2: Pan/Zoom modes
+Day 3-4: Transform controls (rotation, registration)
+Day 5: Multi-select operations
+Week 3: Language & Media
+Day 1-2: Character picker
+Day 3-4: Media library panel enhancements
+Day 5: Drag-and-drop integration
+Week 4: Polish & Testing
+Day 1-2: UI/UX refinements
+Day 3-4: Comprehensive testing
+Day 5: Documentation completion
+9. Success Metrics
+User Experience:
+
+Average time to create activity: < 10 minutes
+Keyboard shortcut adoption: > 70% of power users
+Media library search time: < 2 seconds
+Technical Performance:
+
+Canvas pan/zoom: 60 FPS on mobile
+Asset caching: < 1 second per file
+Search response: < 100ms
+Integration Quality:
+
+NACA API uptime: > 99.9%
+Cache hit rate: > 80%
+Dropbox sync errors: < 0.1%
+10. Dependencies & Prerequisites
+NACA Host Application Must Provide:
+
+Community management API
+Dropbox folder structure API
+Media asset search/filter API
+Vocabulary database API
+WebSocket endpoint for real-time sync
+Third-Party Libraries:
+
+react-resizable-panels - Panel resizing
+react-hotkeys-hook - Keyboard shortcuts
+gsap - Animation engine (already included)
+react-dnd - Drag-and-drop (consider for media library)
+This document provides a comprehensive blueprint for the Build Agent to implement Adobe Animate-style features with full NACA platform integration. All specifications align with the existing codebase architecture and roadmap milestones.
+
+I'm expecting to see a layer based timeline editor along the bottom for the given selected object, for timeline animation. We're basically building an analog to Animate for all intents and purposes. I need all of its features and functions to allow for objects that have animations. And their objects having animations. With default, zero key, and stopping actions. Allowing the parent object or its parent objects to trigger A play on each of its subobjects timelines. Please create a detailed development plan for our build agent that is based off of optimal development strategies such as dependency-based or more efficient strategies as found.
+
+BR
+
+brandon612
+Assistant
+30 minutes ago
+Read 15 files
+Animate-Style Timeline Editor & Animation System - Development Plan
+This document provides a comprehensive build plan for implementing an Adobe Animate-equivalent timeline-based animation system for the Activity Editor.
+
+Executive Summary
+We're building a timeline-based animation editor similar to Adobe Animate that allows:
+
+Layer-based timeline with keyframe editing
+Parent-child animation hierarchies
+GSAP-powered playback with easing controls
+Play/stop actions and zero-key defaults
+Nested timeline orchestration
+System Architecture Overview
+┌─────────────────────────────────────────────────────────────┐
+│                    GameCanvas (Stage)                       │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │         Selected Object Hierarchy Display             │ │
+│  └────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Timeline Editor Panel (Bottom)                 │
+│  ┌──────────────┬──────────────────────────────────────┐   │
+│  │  Layer List  │      Timeline Track & Keyframes      │   │
+│  │  (Tree)      │                                       │   │
+│  │  - Object A  │  ●────────●────────────●────────●    │   │
+│  │    - Child B │    ●─────────●                       │   │
+│  │    - Child C │       ●──────────●                   │   │
+│  └──────────────┴──────────────────────────────────────┘   │
+│  [Playhead Controls] [Frame Ruler] [Animation Properties]  │
+└─────────────────────────────────────────────────────────────┘
+Database Schema Extensions
+New Tables Required
+1. animations - Timeline container for each object
+
+{
+  id: string (uuid)
+  objectId: string (references gameObjects.id)
+  sceneId: string (references scenes.id, nullable for master timeline)
+  duration: number (in seconds)
+  loop: boolean
+  autoplay: boolean
+  playbackRate: number
+  createdAt: timestamp
+}
+2. keyframes - Individual animation keyframes
+
+{
+  id: string (uuid)
+  animationId: string (references animations.id)
+  time: number (in seconds from animation start)
+  property: string (x, y, rotation, scaleX, scaleY, opacity, etc.)
+  value: number | string
+  ease: string (GSAP easing function)
+  createdAt: timestamp
+}
+3. timeline_actions - Play/stop triggers on timeline
+
+{
+  id: string (uuid)
+  animationId: string (parent timeline)
+  targetAnimationId: string (child timeline to control)
+  action: 'play' | 'stop' | 'pause' | 'restart' | 'gotoAndPlay' | 'gotoAndStop'
+  triggerTime: number (when in parent timeline)
+  targetFrame: number (for goto actions, nullable)
+  createdAt: timestamp
+}
+Development Phases
+Phase 1: Data Layer & API ⚡ HIGH PRIORITY
+Duration: 2-3 days
+
+1.1 Database Schema Migration
+Create migration for animations, keyframes, timeline_actions tables
+Add indices for performance (objectId, sceneId, animationId)
+Add foreign key constraints with cascade deletes
+1.2 Storage Service Updates
+createAnimation(data) - Create timeline for object
+updateAnimation(id, data) - Update timeline properties
+deleteAnimation(id) - Delete timeline and cascade keyframes
+createKeyframe(data) - Add keyframe to timeline
+updateKeyframe(id, data) - Modify keyframe properties
+deleteKeyframe(id) - Remove keyframe
+getKeyframesByAnimation(animationId) - Fetch all keyframes
+createTimelineAction(data) - Add child timeline control
+updateTimelineAction(id, data) - Modify action
+deleteTimelineAction(id) - Remove action
+getTimelineActionsByAnimation(animationId) - Fetch actions
+1.3 REST API Routes
+POST   /api/animations
+PATCH  /api/animations/:id
+DELETE /api/animations/:id
+GET    /api/objects/:objectId/animations
+POST   /api/keyframes
+PATCH  /api/keyframes/:id
+DELETE /api/keyframes/:id
+GET    /api/animations/:animationId/keyframes
+POST   /api/timeline-actions
+PATCH  /api/timeline-actions/:id
+DELETE /api/timeline-actions/:id
+GET    /api/animations/:animationId/actions
+Phase 2: Timeline UI Components ⚡ HIGH PRIORITY
+Duration: 4-5 days
+
+2.1 Timeline Panel Container
+File: client/src/components/editor/TimelinePanel.tsx
+
+Features:
+
+Resizable drawer from bottom (100-400px height)
+Collapse/expand with animation
+Split view: Layer tree (200px) + Timeline track (remaining width)
+Playhead controls toolbar
+Frame ruler with time indicators
+2.2 Layer Tree Component
+File: client/src/components/editor/LayerTree.tsx
+
+Features:
+
+Hierarchical object tree (selected object + children)
+Expand/collapse nested objects
+Layer visibility toggles
+Layer lock toggles
+Color-coded layer types
+Selected layer highlight
+2.3 Timeline Track Component
+File: client/src/components/editor/TimelineTrack.tsx
+
+Features:
+
+Horizontal scrollable timeline grid
+Frame ruler with second/frame markers
+Zoom controls (10fps to 60fps display)
+Playhead scrubber (draggable)
+Multi-layer track display
+2.4 Keyframe Display Component
+File: client/src/components/editor/KeyframeLayer.tsx
+
+Features:
+
+Keyframe diamonds on timeline
+Property-grouped keyframes (position, rotation, scale, opacity)
+Drag keyframes to reposition
+Right-click context menu (delete, copy, paste)
+Bezier curve visualization between keyframes
+Selected keyframe highlight
+2.5 Playhead Controls
+File: client/src/components/editor/PlayheadControls.tsx
+
+Features:
+
+Play/Pause button
+Stop button (reset to frame 0)
+Step forward/backward (1 frame)
+Loop toggle
+Playback speed selector (0.25x, 0.5x, 1x, 2x)
+Current time display (00:00.000)
+Phase 3: Keyframe Editing Logic 🔥 CRITICAL
+Duration: 3-4 days
+
+3.1 Keyframe Creation
+Click on timeline to add keyframe at playhead
+Auto-detect property from current object state
+Property selector dropdown (x, y, rotation, scaleX, scaleY, opacity)
+Shortcut: K to add keyframe at playhead
+Shortcut: Shift+K to add keyframe on all properties
+3.2 Keyframe Manipulation
+Drag keyframe left/right to adjust timing
+Delete keyframe: Delete or right-click → Delete
+Copy/paste keyframes: Ctrl+C / Ctrl+V
+Multi-select keyframes: Shift+Click or drag-select box
+Bulk operations on selected keyframes
+3.3 Easing Editor
+File: client/src/components/editor/EasingEditor.tsx
+
+Features:
+
+Visual easing curve display
+Preset easings (GSAP library):
+none - Linear
+power1.out, power2.out, power3.out, power4.out
+back.out, elastic.out, bounce.out
+circ.out, expo.out, sine.out
+Custom cubic-bezier editor (advanced)
+Preview animation with selected easing
+3.4 Zero-Key (Default State)
+Frame 0 automatically captures object's default state
+Cannot be deleted (system keyframe)
+Properties at frame 0 define starting values
+Right-click object → "Reset to Zero Key" to restore defaults
+Phase 4: GSAP Timeline Engine 🔥 CRITICAL
+Duration: 3-4 days
+
+4.1 Timeline Builder Service
+File: client/src/lib/timeline-builder.ts
+
+interface TimelineBuilder {
+  buildGSAPTimeline(animation: Animation, keyframes: Keyframe[]): gsap.core.Timeline;
+  buildNestedTimeline(parentAnimation: Animation, childAnimations: Animation[]): gsap.core.Timeline;
+  updateTimeline(timeline: gsap.core.Timeline, keyframes: Keyframe[]): void;
+  addTimelineAction(parentTimeline: gsap.core.Timeline, action: TimelineAction): void;
+}
+Features:
+
+Convert keyframes to GSAP timeline
+Sort keyframes by time
+Group keyframes by property
+Apply easing per keyframe segment
+Handle nested timelines (parent controls children)
+4.2 Playback Controller
+File: client/src/hooks/use-timeline-playback.ts
+
+interface TimelinePlayback {
+  play(): void;
+  pause(): void;
+  stop(): void;
+  seek(time: number): void;
+  setPlaybackRate(rate: number): void;
+  getCurrentTime(): number;
+  getDuration(): number;
+  isPlaying: boolean;
+}
+4.3 Scrubbing Preview
+Real-time preview as playhead drags
+Update object transforms on each frame
+Debounced rendering for performance
+Visual feedback during scrub
+Phase 5: Parent-Child Timeline Orchestration 🎯 MEDIUM PRIORITY
+Duration: 2-3 days
+
+5.1 Timeline Action Editor
+File: client/src/components/editor/TimelineActionEditor.tsx
+
+Features:
+
+Add "Play Child Timeline" action marker on parent timeline
+Dropdown to select child object's timeline
+Action types:
+play - Start child timeline from current position
+stop - Stop and reset child timeline
+pause - Pause child timeline
+restart - Reset and play from frame 0
+gotoAndPlay(frame) - Jump to frame and play
+gotoAndStop(frame) - Jump to frame and stop
+Visual marker on timeline (e.g., flag icon)
+Drag action marker to reposition trigger time
+5.2 Nested Timeline Playback
+When parent timeline plays, execute child actions at trigger times
+Recursively play nested child timelines
+Synchronize parent/child playback speeds
+Handle circular references (error prevention)
+5.3 Timeline Hierarchy Viewer
+File: client/src/components/editor/TimelineHierarchy.tsx
+
+Features:
+
+Tree view of all object timelines in scene
+Visual indicators for parent → child relationships
+Expand/collapse timeline groups
+Quick navigation to timeline action markers
+Phase 6: Advanced Animation Features 🎨 MEDIUM PRIORITY
+Duration: 3-4 days
+
+6.1 Motion Path Editing
+Draw bezier curve paths on canvas
+Animate object along path
+Path offset controls (start/end percentage)
+Path rotation (align to path direction)
+Visual path preview with control points
+6.2 Onion Skinning
+Toggle onion skin mode
+Show previous/next frames as ghost overlays
+Configurable frame range (e.g., ±5 frames)
+Opacity control for ghost frames
+Color-coded before/after frames
+6.3 Timeline Markers & Labels
+Add named markers on timeline (e.g., "Intro", "Loop Start")
+Color-coded labels
+Jump to marker via dropdown
+Use markers as action trigger points
+6.4 Animation Presets Library
+File: client/src/components/editor/AnimationPresetsPanel.tsx
+
+Features:
+
+Save custom animation presets
+Apply preset to selected object
+Built-in presets:
+Fade In/Out
+Bounce In/Out
+Slide In/Out (from edges)
+Rotate 360°
+Scale Pulse
+Elastic Wiggle
+Preview preset before applying
+Phase 7: Export & Integration 🚀 HIGH PRIORITY
+Duration: 2-3 days
+
+7.1 Activity Export Schema Extension
+Update ActivityDefinition to include animations:
+
+interface ActivityObject {
+  // ... existing fields
+  animations?: {
+    id: string;
+    duration: number;
+    loop: boolean;
+    autoplay: boolean;
+    keyframes: {
+      time: number;
+      property: string;
+      value: any;
+      ease: string;
+    }[];
+    actions?: {
+      action: string;
+      targetObjectId: string;
+      triggerTime: number;
+      targetFrame?: number;
+    }[];
+  }[];
+}
+7.2 NACA Player Integration
+Send animation data via DevSync WebSocket
+Player builds GSAP timelines on runtime
+Trigger animations based on scene changes
+Support for vocabulary-driven animations (e.g., animate on correct answer)
+7.3 Timeline Performance Optimization
+Virtualized rendering for large timelines (1000+ keyframes)
+Lazy-load keyframes outside viewport
+Debounce keyframe updates during drag
+Throttle playback preview during scrub
+Keyboard Shortcuts
+Add to DEFAULT_SHORTCUTS in use-keyboard-shortcuts.ts:
+
+{ key: "k", action: "addKeyframe", description: "Add keyframe at playhead" },
+{ key: "k", modifiers: ["shift"], action: "addKeyframeAll", description: "Add keyframe on all properties" },
+{ key: " ", action: "playPause", description: "Play/Pause timeline" },
+{ key: ",", action: "prevFrame", description: "Previous frame" },
+{ key: ".", action: "nextFrame", description: "Next frame" },
+{ key: "Home", action: "gotoStart", description: "Jump to start" },
+{ key: "End", action: "gotoEnd", description: "Jump to end" },
+{ key: "i", action: "setInPoint", description: "Set in-point" },
+{ key: "o", action: "setOutPoint", description: "Set out-point" },
+Dependency Graph
+Phase 1: Data Layer & API
+    │
+    ▼
+Phase 2: Timeline UI Components
+    │
+    ├───────────────┬───────────────┐
+    ▼               ▼               ▼
+Phase 3:        Phase 4:        Phase 5:
+Keyframe        GSAP            Parent-Child
+Editing         Engine          Orchestration
+    │               │               │
+    └───────────────┴───────────────┘
+                    ▼
+            Phase 6: Advanced Features
+                    │
+                    ▼
+            Phase 7: Export & Integration
+Implementation Priority Order
+Phase 1 - Database & API foundation
+Phase 2 - Timeline UI shell (allows visual development)
+Phase 4 - GSAP engine (enables playback testing)
+Phase 3 - Keyframe editing (makes timeline functional)
+Phase 5 - Parent-child orchestration
+Phase 7 - Export integration (NACA player compatibility)
+Phase 6 - Advanced features (polish)
+Technical Considerations
+Performance
+Use requestAnimationFrame for playback loop
+Virtualized scrolling for timeline (React Window)
+Memoize timeline rebuilds (only on keyframe changes)
+Web Workers for heavy timeline calculations
+State Management
+Timeline state in useTimeline hook
+Keyframe mutations via React Query
+Optimistic updates for smooth UX
+Undo/redo stack for keyframe edits
+Accessibility
+Keyboard navigation for timeline
+Screen reader support for keyframe announcements
+High contrast mode for timeline elements
+Focus management during playback
+File Structure
+client/src/
+├── components/editor/
+│   ├── TimelinePanel.tsx          [Phase 2.1]
+│   ├── LayerTree.tsx              [Phase 2.2]
+│   ├── TimelineTrack.tsx          [Phase 2.3]
+│   ├── KeyframeLayer.tsx          [Phase 2.4]
+│   ├── PlayheadControls.tsx       [Phase 2.5]
+│   ├── EasingEditor.tsx           [Phase 3.3]
+│   ├── TimelineActionEditor.tsx   [Phase 5.1]
+│   ├── TimelineHierarchy.tsx      [Phase 5.3]
+│   └── AnimationPresetsPanel.tsx  [Phase 6.4]
+├── hooks/
+│   ├── use-timeline.ts            [Phase 2]
+│   ├── use-timeline-playback.ts   [Phase 4.2]
+│   └── use-keyframe-editor.ts     [Phase 3]
+├── lib/
+│   ├── timeline-builder.ts        [Phase 4.1]
+│   └── animation-presets.ts       [Phase 6.4]
+server/
+├── db/schema/
+│   └── animations.ts              [Phase 1.1]
+├── routes.ts                      [Phase 1.3]
+└── storage.ts                     [Phase 1.2]
+shared/
+└── schema.ts                      [Phase 7.1]
+Testing Strategy
+Unit Tests: Timeline builder logic, keyframe sorting, easing calculations
+Integration Tests: GSAP timeline generation, nested timeline playback
+E2E Tests: Full animation workflow (create keyframes → preview → export)
+Performance Tests: 1000+ keyframe timeline rendering, playback smoothness
+Risks & Mitigations
+Risk	Mitigation
+GSAP timeline rebuilds cause jank	Debounce rebuilds, use timeline.invalidate() for updates
+Nested timelines create circular references	Validate parent-child relationships, prevent cycles
+Large timelines slow down UI	Virtualized rendering, lazy-load keyframes
+Keyframe precision issues (floating point)	Round times to frame boundaries (e.g., 1/60s)
+Success Metrics
+Timeline loads in <200ms for 500 keyframes
+Playback maintains 60fps for animations with 50+ layers
+Keyframe editing feels instant (optimistic updates)
+Export includes all animation data for NACA player
+Users can create complex animations without performance degradation

@@ -1,0 +1,857 @@
+# Subdomain Health Check System - Complete Implementation Guide
+
+## Overview
+
+This document provides complete code and instructions for implementing the NACA Subdomain Health Check System in the Activity Manager application.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Frontend Components                          │
+│  ┌─────────────────────┐  ┌─────────────────────────────────┐  │
+│  │  SubdomainHealthCheck │  │      DomainsTab (Admin)        │  │
+│  │   (Standalone)        │  │  Platform + Community View     │  │
+│  └──────────┬────────────┘  └───────────────┬───────────────┘  │
+└─────────────┼───────────────────────────────┼───────────────────┘
+              │                               │
+              ▼                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        API Endpoints                            │
+│  GET  /api/admin/special-subdomains/status                      │
+│  POST /api/admin/special-subdomains/:subdomain/health-check     │
+│  POST /api/admin/special-subdomains/health-check-all            │
+│  POST /api/admin/special-subdomains/:subdomain/provision        │
+│  GET  /api/admin/special-subdomains/known-issues                │
+└─────────────────────────────────────────────────────────────────┘
+              │                               │
+              ▼                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      Backend Services                           │
+│  ┌─────────────────────┐  ┌─────────────────────────────────┐  │
+│  │  subdomainService   │  │      porkbunService              │  │
+│  │  - Health Checks    │  │  - DNS Record CRUD               │  │
+│  │  - Provisioning     │  │  - A Record Management           │  │
+│  └──────────┬──────────┘  └───────────────┬─────────────────┘  │
+└─────────────┼─────────────────────────────┼─────────────────────┘
+              │                             │
+              ▼                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    External Services                            │
+│  ┌─────────────────────┐  ┌─────────────────────────────────┐  │
+│  │   DNS Resolution    │  │      Porkbun API                 │  │
+│  │   (Node.js dns)     │  │  api.porkbun.com/api/json/v3     │  │
+│  └─────────────────────┘  └─────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Environment Variables
+
+```bash
+# Required
+PRIMARY_DOMAIN=naca.community
+SERVER_IP=your-server-ip-address
+PORKBUN_API_KEY=pk1_xxxxxxxxxxxxxxxx
+PORKBUN_SECRET_KEY=sk1_xxxxxxxxxxxxxxxx
+```
+
+---
+
+## Database Schema
+
+Add these columns to your communities/entities table:
+
+```typescript
+// shared/schema.ts
+import { pgTable, varchar, text, timestamp, boolean } from "drizzle-orm/pg-core";
+
+export const communities = pgTable("communities", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  name: varchar("name", { length: 255 }).notNull(),
+  
+  // Subdomain fields
+  subdomain: varchar("subdomain", { length: 100 }),
+  subdomainDnsStatus: varchar("subdomain_dns_status", { length: 50 }).default("none"),
+  subdomainDnsRecordId: varchar("subdomain_dns_record_id", { length: 100 }),
+  subdomainHealthStatus: varchar("subdomain_health_status", { length: 50 }).default("unknown"),
+  subdomainLastHealthCheck: timestamp("subdomain_last_health_check"),
+  subdomainHealthError: text("subdomain_health_error"),
+  
+  isActive: boolean("is_active").default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+```
+
+---
+
+## File 1: Porkbun DNS Service
+
+**Path:** `server/porkbunService.ts`
+
+```typescript
+/**
+ * Porkbun DNS API Service
+ * Handles all interactions with the Porkbun API for DNS record management.
+ * API Documentation: https://porkbun.com/api/json/v3/documentation
+ */
+
+const PORKBUN_API_BASE = 'https://api.porkbun.com/api/json/v3';
+
+export interface PorkbunCredentials {
+  apikey: string;
+  secretapikey: string;
+}
+
+export interface DNSRecord {
+  id: string;
+  name: string;
+  type: string;
+  content: string;
+  ttl: string;
+  prio?: string;
+  notes?: string;
+}
+
+export interface CreateDNSRecordParams {
+  domain: string;
+  name: string;
+  type: 'A' | 'AAAA' | 'CNAME' | 'MX' | 'TXT' | 'NS' | 'SRV' | 'TLSA' | 'CAA' | 'ALIAS' | 'HTTPS' | 'SVCB' | 'SSHFP';
+  content: string;
+  ttl?: string;
+  prio?: string;
+  notes?: string;
+}
+
+export interface PorkbunResponse<T = any> {
+  status: 'SUCCESS' | 'ERROR';
+  message?: string;
+  records?: T[];
+  id?: string;
+  domains?: T[];
+}
+
+function getCredentials(): PorkbunCredentials {
+  const apikey = process.env.PORKBUN_API_KEY;
+  const secretapikey = process.env.PORKBUN_SECRET_KEY;
+
+  if (!apikey || !secretapikey) {
+    throw new Error('Porkbun API credentials not configured. Set PORKBUN_API_KEY and PORKBUN_SECRET_KEY.');
+  }
+
+  return { apikey, secretapikey };
+}
+
+async function porkbunRequest<T>(
+  endpoint: string, 
+  additionalBody: Record<string, any> = {}
+): Promise<PorkbunResponse<T>> {
+  const credentials = getCredentials();
+  
+  const response = await fetch(`${PORKBUN_API_BASE}${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...credentials, ...additionalBody }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Porkbun API error: ${response.status} ${response.statusText}`);
+  }
+
+  const data = await response.json() as PorkbunResponse<T>;
+  
+  if (data.status === 'ERROR') {
+    throw new Error(`Porkbun API error: ${data.message || 'Unknown error'}`);
+  }
+
+  return data;
+}
+
+/**
+ * Test API credentials by pinging the Porkbun API
+ */
+export async function testCredentials(): Promise<boolean> {
+  try {
+    const credentials = getCredentials();
+    const response = await fetch(`${PORKBUN_API_BASE}/ping`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(credentials),
+    });
+    const data = await response.json();
+    return data.status === 'SUCCESS';
+  } catch (error) {
+    console.error('[Porkbun] Credential test failed:', error);
+    return false;
+  }
+}
+
+/**
+ * Get all DNS records for a domain
+ */
+export async function getDNSRecords(domain: string): Promise<DNSRecord[]> {
+  console.log(`[Porkbun] Fetching DNS records for ${domain}`);
+  const response = await porkbunRequest<DNSRecord>(`/dns/retrieve/${domain}`);
+  return response.records || [];
+}
+
+/**
+ * Create a new DNS record
+ */
+export async function createDNSRecord(params: CreateDNSRecordParams): Promise<string> {
+  console.log(`[Porkbun] Creating ${params.type} record for ${params.name}.${params.domain}`);
+  
+  const body: Record<string, any> = {
+    name: params.name,
+    type: params.type,
+    content: params.content,
+  };
+
+  if (params.ttl) body.ttl = params.ttl;
+  if (params.prio) body.prio = params.prio;
+
+  const response = await porkbunRequest(`/dns/create/${params.domain}`, body);
+  
+  if (!response.id) {
+    throw new Error('Failed to create DNS record: No ID returned');
+  }
+
+  console.log(`[Porkbun] Created DNS record with ID: ${response.id}`);
+  return response.id;
+}
+
+/**
+ * Delete a DNS record
+ */
+export async function deleteDNSRecord(domain: string, recordId: string): Promise<void> {
+  console.log(`[Porkbun] Deleting DNS record ${recordId} from ${domain}`);
+  await porkbunRequest(`/dns/delete/${domain}/${recordId}`);
+  console.log(`[Porkbun] Deleted DNS record ${recordId}`);
+}
+
+/**
+ * Create a subdomain A record pointing to a specific IP
+ */
+export async function createSubdomain(domain: string, subdomain: string, ipAddress: string): Promise<string> {
+  return createDNSRecord({
+    domain,
+    name: subdomain,
+    type: 'A',
+    content: ipAddress,
+    ttl: '600',
+  });
+}
+
+/**
+ * Delete a subdomain's A record
+ */
+export async function deleteSubdomain(domain: string, subdomain: string): Promise<void> {
+  const records = await getDNSRecords(domain);
+  const subdomainRecords = records.filter(
+    r => r.name === subdomain || r.name === `${subdomain}.${domain}`
+  );
+
+  for (const record of subdomainRecords) {
+    await deleteDNSRecord(domain, record.id);
+  }
+}
+
+/**
+ * Check if a subdomain exists
+ */
+export async function subdomainExists(domain: string, subdomain: string): Promise<boolean> {
+  const records = await getDNSRecords(domain);
+  return records.some(
+    r => r.name === subdomain || r.name === `${subdomain}.${domain}`
+  );
+}
+
+/**
+ * Get all subdomains for a domain (A and CNAME records)
+ */
+export async function getSubdomains(domain: string): Promise<DNSRecord[]> {
+  const records = await getDNSRecords(domain);
+  return records.filter(r => r.type === 'A' || r.type === 'CNAME' || r.type === 'ALIAS');
+}
+```
+
+---
+
+## File 2: Subdomain Service
+
+**Path:** `server/subdomainService.ts`
+
+```typescript
+/**
+ * Subdomain Management Service
+ * Handles health checks and DNS provisioning for subdomains.
+ */
+
+import * as porkbun from './porkbunService';
+
+const PRIMARY_DOMAIN = process.env.PRIMARY_DOMAIN || 'naca.community';
+const SERVER_IP = process.env.SERVER_IP || '';
+
+export interface SubdomainHealthResult {
+  subdomain: string;
+  dnsResolved: boolean;
+  dnsIp: string | null;
+  httpReachable: boolean;
+  httpStatusCode: number | null;
+  healthy: boolean;
+  error: string | null;
+}
+
+export interface SubdomainProvisionResult {
+  success: boolean;
+  recordId: string | null;
+  error: string | null;
+}
+
+/**
+ * Check DNS resolution for a subdomain
+ */
+async function checkDnsResolution(subdomain: string): Promise<{ 
+  resolved: boolean; 
+  ip: string | null; 
+  error: string | null 
+}> {
+  const fullDomain = `${subdomain}.${PRIMARY_DOMAIN}`;
+  
+  try {
+    const dns = await import('dns').then(m => m.promises);
+    const addresses = await dns.resolve4(fullDomain);
+    
+    if (addresses.length > 0) {
+      return { resolved: true, ip: addresses[0], error: null };
+    }
+    return { resolved: false, ip: null, error: 'No A record found' };
+  } catch (error: any) {
+    return { 
+      resolved: false, 
+      ip: null, 
+      error: error.code === 'ENOTFOUND' ? 'Domain not found' : error.message 
+    };
+  }
+}
+
+/**
+ * Check HTTP reachability for a subdomain
+ */
+async function checkHttpReachability(subdomain: string): Promise<{ 
+  reachable: boolean; 
+  statusCode: number | null; 
+  error: string | null 
+}> {
+  const url = `https://${subdomain}.${PRIMARY_DOMAIN}`;
+  
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    
+    const response = await fetch(url, {
+      method: 'HEAD',
+      signal: controller.signal,
+      redirect: 'follow',
+    });
+    
+    clearTimeout(timeout);
+    
+    const reachable = response.status >= 200 && response.status < 400;
+    return { reachable, statusCode: response.status, error: null };
+  } catch (error: any) {
+    return { 
+      reachable: false, 
+      statusCode: null, 
+      error: error.name === 'AbortError' ? 'Timeout' : error.message 
+    };
+  }
+}
+
+/**
+ * Perform a complete health check for a subdomain
+ */
+export async function checkSubdomainHealth(subdomain: string): Promise<SubdomainHealthResult> {
+  const dnsResult = await checkDnsResolution(subdomain);
+  
+  let ipMismatch = false;
+  if (dnsResult.resolved && SERVER_IP && dnsResult.ip !== SERVER_IP) {
+    ipMismatch = true;
+  }
+  
+  let httpResult: { reachable: boolean; statusCode: number | null; error: string | null } = { 
+    reachable: false, 
+    statusCode: null, 
+    error: 'DNS not resolved' 
+  };
+  
+  if (dnsResult.resolved && !ipMismatch) {
+    httpResult = await checkHttpReachability(subdomain);
+  } else if (ipMismatch) {
+    httpResult.error = `IP mismatch: expected ${SERVER_IP}, got ${dnsResult.ip}`;
+  }
+  
+  const healthy = dnsResult.resolved && !ipMismatch && httpResult.reachable;
+  const error = ipMismatch 
+    ? `IP mismatch: expected ${SERVER_IP}, got ${dnsResult.ip}` 
+    : (dnsResult.error || httpResult.error);
+  
+  return {
+    subdomain,
+    dnsResolved: dnsResult.resolved,
+    dnsIp: dnsResult.ip,
+    httpReachable: httpResult.reachable,
+    httpStatusCode: httpResult.statusCode,
+    healthy,
+    error,
+  };
+}
+
+/**
+ * Provision a subdomain in Porkbun DNS
+ */
+export async function provisionSubdomain(subdomain: string): Promise<SubdomainProvisionResult> {
+  if (!SERVER_IP) {
+    return { success: false, recordId: null, error: 'SERVER_IP environment variable not set' };
+  }
+  
+  try {
+    const exists = await porkbun.subdomainExists(PRIMARY_DOMAIN, subdomain);
+    if (exists) {
+      const records = await porkbun.getDNSRecords(PRIMARY_DOMAIN);
+      const existingRecord = records.find(r => r.name === subdomain && r.type === 'A');
+      return { success: true, recordId: existingRecord?.id || null, error: null };
+    }
+    
+    const recordId = await porkbun.createSubdomain(PRIMARY_DOMAIN, subdomain, SERVER_IP);
+    console.log(`[Subdomain] Created DNS record for ${subdomain}.${PRIMARY_DOMAIN} -> ${SERVER_IP}`);
+    
+    return { success: true, recordId, error: null };
+  } catch (error: any) {
+    console.error(`[Subdomain] Failed to provision ${subdomain}:`, error.message);
+    return { success: false, recordId: null, error: error.message };
+  }
+}
+
+/**
+ * Remove a subdomain from Porkbun DNS
+ */
+export async function deprovisionSubdomain(
+  subdomain: string, 
+  recordId?: string
+): Promise<{ success: boolean; error: string | null }> {
+  try {
+    if (recordId) {
+      await porkbun.deleteDNSRecord(PRIMARY_DOMAIN, recordId);
+    } else {
+      await porkbun.deleteSubdomain(PRIMARY_DOMAIN, subdomain);
+    }
+    console.log(`[Subdomain] Deleted DNS record for ${subdomain}.${PRIMARY_DOMAIN}`);
+    return { success: true, error: null };
+  } catch (error: any) {
+    console.error(`[Subdomain] Failed to deprovision ${subdomain}:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+```
+
+---
+
+## File 3: API Routes
+
+**Path:** `server/routes.ts` (add these routes)
+
+```typescript
+import { Router, Request, Response } from "express";
+import { isAuthenticated, hasRole } from "./auth";
+import { checkSubdomainHealth, provisionSubdomain } from "./subdomainService";
+import { getDNSRecords } from "./porkbunService";
+
+const router = Router();
+
+const PRIMARY_DOMAIN = process.env.PRIMARY_DOMAIN || 'naca.community';
+const SERVER_IP = process.env.SERVER_IP || '';
+
+// Define your special/platform subdomains
+const SPECIAL_SUBDOMAINS = ['docs', 'api', 'admin', 'help', 'www'];
+
+// Known issues for diagnostics
+const KNOWN_ISSUES = [
+  {
+    id: 'DNS_NOT_CONFIGURED',
+    category: 'dns',
+    severity: 'critical',
+    title: 'DNS Record Missing',
+    description: 'No A record found for this subdomain.',
+    solution: 'Use the "Provision DNS" button to create the A record.',
+    autoFixable: true,
+  },
+  {
+    id: 'DNS_PROPAGATION',
+    category: 'dns',
+    severity: 'warning',
+    title: 'DNS Propagation in Progress',
+    description: 'DNS record exists but may still be propagating.',
+    solution: 'Wait 5-30 minutes for DNS propagation to complete.',
+    autoFixable: false,
+  },
+  {
+    id: 'IP_MISMATCH',
+    category: 'dns',
+    severity: 'critical',
+    title: 'IP Address Mismatch',
+    description: 'DNS record points to wrong IP address.',
+    solution: 'Update DNS record to point to the correct server IP.',
+    autoFixable: false,
+  },
+  {
+    id: 'HTTP_TIMEOUT',
+    category: 'http',
+    severity: 'warning',
+    title: 'HTTP Timeout',
+    description: 'Server did not respond within 10 seconds.',
+    solution: 'Check server health and network connectivity.',
+    autoFixable: false,
+  },
+  {
+    id: 'SSL_CERTIFICATE_ERROR',
+    category: 'ssl',
+    severity: 'critical',
+    title: 'SSL Certificate Error',
+    description: 'SSL/TLS certificate validation failed.',
+    solution: 'Add domain to deployment and wait for certificate provisioning.',
+    autoFixable: false,
+  },
+  {
+    id: 'REPLIT_DOMAIN_NOT_CONFIGURED',
+    category: 'config',
+    severity: 'critical',
+    title: 'Domain Not Added to Deployment',
+    description: 'DNS exists but domain not added to deployment.',
+    solution: 'Go to Deployments > Settings > Link a domain.',
+    autoFixable: false,
+  },
+];
+
+// Perform comprehensive health check with diagnostics
+async function performComprehensiveHealthCheck(subdomain: string) {
+  const fullDomain = `${subdomain}.${PRIMARY_DOMAIN}`;
+  const checkedAt = new Date().toISOString();
+  
+  // Get DNS records
+  let hasDns = false;
+  let dnsIp: string | null = null;
+  let dnsRecordId: string | null = null;
+  
+  try {
+    const records = await getDNSRecords(PRIMARY_DOMAIN);
+    const record = records.find(r => r.name === subdomain && r.type === 'A');
+    if (record) {
+      hasDns = true;
+      dnsIp = record.content;
+      dnsRecordId = record.id;
+    }
+  } catch (e) {}
+  
+  // Check DNS resolution
+  let dnsResolved = false;
+  let resolvedIp: string | null = null;
+  try {
+    const dns = await import('dns').then(m => m.promises);
+    const addresses = await dns.resolve4(fullDomain);
+    if (addresses.length > 0) {
+      dnsResolved = true;
+      resolvedIp = addresses[0];
+    }
+  } catch (e) {}
+  
+  // Check HTTP
+  let httpReachable = false;
+  let httpStatusCode: number | null = null;
+  let httpError: string | null = null;
+  
+  if (dnsResolved) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      const response = await fetch(`https://${fullDomain}`, {
+        method: 'HEAD',
+        signal: controller.signal,
+        redirect: 'follow',
+      });
+      clearTimeout(timeout);
+      httpStatusCode = response.status;
+      httpReachable = response.status >= 200 && response.status < 400;
+    } catch (e: any) {
+      httpError = e.message;
+    }
+  }
+  
+  // Build checks object
+  const checks = {
+    dns: {
+      status: hasDns ? 'pass' : 'fail',
+      details: hasDns ? `A record: ${dnsIp}` : 'No A record found',
+      ip: dnsIp,
+      recordId: dnsRecordId,
+    },
+    http: {
+      status: httpReachable ? 'pass' : 'fail',
+      details: httpReachable ? `Status ${httpStatusCode}` : (httpError || 'Not reachable'),
+      statusCode: httpStatusCode,
+    },
+    ssl: {
+      status: httpReachable ? 'pass' : (httpError?.includes('certificate') ? 'fail' : 'warn'),
+      details: httpReachable ? 'Valid' : 'Unable to verify',
+    },
+    routing: {
+      status: httpReachable ? 'pass' : 'warn',
+      details: httpReachable ? 'Responding' : 'Not responding',
+    },
+    ipMatch: {
+      status: (!SERVER_IP || resolvedIp === SERVER_IP) ? 'pass' : 'fail',
+      details: SERVER_IP ? (resolvedIp === SERVER_IP ? 'Match' : `Mismatch: ${resolvedIp}`) : 'SERVER_IP not set',
+    },
+  };
+  
+  // Detect issues
+  const issues: any[] = [];
+  
+  if (!hasDns) {
+    issues.push(KNOWN_ISSUES.find(i => i.id === 'DNS_NOT_CONFIGURED'));
+  }
+  if (SERVER_IP && resolvedIp && resolvedIp !== SERVER_IP) {
+    issues.push(KNOWN_ISSUES.find(i => i.id === 'IP_MISMATCH'));
+  }
+  if (httpError?.includes('certificate')) {
+    issues.push(KNOWN_ISSUES.find(i => i.id === 'SSL_CERTIFICATE_ERROR'));
+  }
+  if (hasDns && httpError?.includes('ENOTFOUND')) {
+    issues.push(KNOWN_ISSUES.find(i => i.id === 'REPLIT_DOMAIN_NOT_CONFIGURED'));
+  }
+  
+  // Determine overall health
+  let overallHealth: 'healthy' | 'degraded' | 'unhealthy' | 'unknown' = 'unknown';
+  const criticalIssues = issues.filter(i => i?.severity === 'critical').length;
+  const warningIssues = issues.filter(i => i?.severity === 'warning').length;
+  
+  if (criticalIssues > 0) {
+    overallHealth = 'unhealthy';
+  } else if (warningIssues > 0) {
+    overallHealth = 'degraded';
+  } else if (httpReachable) {
+    overallHealth = 'healthy';
+  }
+  
+  return {
+    subdomain,
+    fullDomain,
+    overallHealth,
+    checkedAt,
+    checks,
+    issues: issues.filter(Boolean),
+    recommendations: [],
+  };
+}
+
+// GET status of all special subdomains
+router.get("/api/admin/special-subdomains/status", isAuthenticated, hasRole('admin'), async (req, res) => {
+  try {
+    const records = await getDNSRecords(PRIMARY_DOMAIN);
+    
+    const subdomains = SPECIAL_SUBDOMAINS.map(subdomain => {
+      const dnsRecord = records.find(r => r.name === subdomain && r.type === 'A');
+      return {
+        subdomain,
+        fullDomain: `${subdomain}.${PRIMARY_DOMAIN}`,
+        status: dnsRecord ? 'active' : 'unknown',
+        hasDns: !!dnsRecord,
+      };
+    });
+    
+    res.json({
+      subdomains,
+      serverIpConfigured: !!SERVER_IP,
+      primaryDomain: PRIMARY_DOMAIN,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST health check for single subdomain
+router.post("/api/admin/special-subdomains/:subdomain/health-check", isAuthenticated, hasRole('admin'), async (req, res) => {
+  try {
+    const { subdomain } = req.params;
+    
+    if (!SPECIAL_SUBDOMAINS.includes(subdomain)) {
+      res.status(400).json({ error: `Invalid subdomain: ${subdomain}` });
+      return;
+    }
+    
+    const result = await performComprehensiveHealthCheck(subdomain);
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST batch health check
+router.post("/api/admin/special-subdomains/health-check-all", isAuthenticated, hasRole('admin'), async (req, res) => {
+  try {
+    const results = await Promise.all(
+      SPECIAL_SUBDOMAINS.map(subdomain => performComprehensiveHealthCheck(subdomain))
+    );
+    
+    res.json({
+      checkedAt: new Date().toISOString(),
+      total: results.length,
+      healthy: results.filter(r => r.overallHealth === 'healthy').length,
+      degraded: results.filter(r => r.overallHealth === 'degraded').length,
+      unhealthy: results.filter(r => r.overallHealth === 'unhealthy').length,
+      unknown: results.filter(r => r.overallHealth === 'unknown').length,
+      results,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST provision DNS
+router.post("/api/admin/special-subdomains/:subdomain/provision", isAuthenticated, hasRole('admin'), async (req, res) => {
+  try {
+    const { subdomain } = req.params;
+    
+    if (!SPECIAL_SUBDOMAINS.includes(subdomain)) {
+      res.status(400).json({ error: `Invalid subdomain: ${subdomain}` });
+      return;
+    }
+    
+    const result = await provisionSubdomain(subdomain);
+    
+    if (result.success) {
+      res.json({ success: true, recordId: result.recordId });
+    } else {
+      res.status(500).json({ error: result.error });
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET known issues
+router.get("/api/admin/special-subdomains/known-issues", isAuthenticated, hasRole('admin'), async (req, res) => {
+  res.json(KNOWN_ISSUES);
+});
+
+export default router;
+```
+
+---
+
+## File 4: Standalone React Component
+
+**Path:** `client/src/components/standalone/SubdomainHealthCheck.tsx`
+
+This is a fully self-contained component with inline icons and styles. See the complete 895-line file in the NACA codebase.
+
+**Key Features:**
+- No external dependencies except React
+- Inline SVG icons
+- Tailwind-compatible inline styles
+- Auto-refresh capability
+- Export health reports as Markdown
+- Configurable via props
+
+**Usage:**
+
+```tsx
+import { SubdomainHealthCheck } from './SubdomainHealthCheck';
+
+// Basic usage
+<SubdomainHealthCheck
+  apiBaseUrl="https://your-api.com"
+  authToken="your-token"
+/>
+
+// With all options
+<SubdomainHealthCheck
+  apiBaseUrl="https://your-api.com"
+  authToken="your-token"
+  autoRefreshInterval={60000}
+  onHealthChange={(summary) => console.log(summary)}
+  onError={(error) => console.error(error)}
+  showExportButton={true}
+  showAutoRefreshToggle={true}
+  compactMode={false}
+/>
+```
+
+---
+
+## Health Check Flow
+
+```
+1. DNS Resolution Check
+   └── Uses Node.js dns.resolve4() to verify A record exists
+   
+2. IP Match Check  
+   └── Compares resolved IP against expected SERVER_IP
+   
+3. HTTP Reachability Check
+   └── Sends HEAD request with 10-second timeout
+   └── Considers 2xx/3xx as reachable
+   
+4. Issue Detection
+   └── Matches results against KNOWN_ISSUES patterns
+   └── Returns actionable solutions
+
+5. Overall Health Calculation
+   └── healthy: All checks pass
+   └── degraded: Some non-critical issues
+   └── unhealthy: Critical issues detected
+   └── unknown: No check performed yet
+```
+
+---
+
+## Known Issue Categories
+
+| Category | Description |
+|----------|-------------|
+| `dns` | DNS resolution and record issues |
+| `http` | HTTP connectivity and response issues |
+| `ssl` | SSL/TLS certificate issues |
+| `auth` | Authentication issues |
+| `routing` | Application routing issues |
+| `config` | Configuration issues |
+
+---
+
+## Manual Steps Required
+
+After DNS provisioning via the API, you must:
+
+1. Go to **Deployments > Settings > Link a domain**
+2. Add the subdomain (e.g., `api.naca.community`)
+3. Complete the verification process
+4. Wait for SSL certificate provisioning
+
+This step cannot be automated via API.
+
+---
+
+## Testing
+
+```bash
+# Test Porkbun credentials
+curl -X POST https://api.porkbun.com/api/json/v3/ping \
+  -H "Content-Type: application/json" \
+  -d '{"apikey":"pk1_xxx","secretapikey":"sk1_xxx"}'
+
+# Test health check endpoint
+curl -X POST https://your-api.com/api/admin/special-subdomains/docs/health-check \
+  -H "Authorization: Bearer your-token"
+```

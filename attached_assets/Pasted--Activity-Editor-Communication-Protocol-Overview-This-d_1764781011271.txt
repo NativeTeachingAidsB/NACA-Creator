@@ -1,0 +1,641 @@
+# Activity Editor Communication Protocol
+
+## Overview
+
+This document describes the communication architecture between the Activity Editor (hosted at **create.naca.community**) and the NACA platform. It covers real-time synchronization, polling strategies, notification handling, and best practices for maintaining data consistency.
+
+---
+
+## Communication Architecture
+
+```
+┌─────────────────────┐     REST API      ┌─────────────────────┐
+│                     │◄────────────────►│                     │
+│   Activity Editor   │                   │   NACA Platform     │
+│   (create.naca.     │   WebSocket       │   (naca.community)  │
+│    community)       │◄────────────────►│                     │
+│                     │    DevSync        │                     │
+└─────────────────────┘                   └─────────────────────┘
+         │                                          │
+         │         Notification System              │
+         │◄────────────────────────────────────────►│
+         │                                          │
+```
+
+---
+
+## 1. REST API Communication
+
+### Request/Response Pattern
+
+All REST communication follows standard HTTP semantics with JSON payloads.
+
+**Request Headers:**
+```http
+Content-Type: application/json
+Authorization: Bearer <token_or_api_key>
+X-Community-Subdomain: blackfeet
+Accept: application/json
+```
+
+**Response Headers:**
+```http
+Content-Type: application/json
+ETag: "version-hash"
+X-API-Version: 1.0.0
+X-RateLimit-Remaining: 95
+X-RateLimit-Reset: 1706400000
+```
+
+### Community Context Resolution
+
+The Activity Editor must specify community context for community-scoped operations:
+
+**Priority Order (first match wins):**
+1. URL path parameter (e.g., `/api/activity-editor/communities/:communityId/media`)
+2. Header: `X-Community-Subdomain: blackfeet`
+3. Header: `X-Community-Id: <uuid>`
+4. Header: `X-Community-Slug: blackfeet-nation`
+5. Default: Global community
+
+**Example with headers:**
+```javascript
+const response = await fetch('https://naca.community/api/activity-editor/communities/abc123/media', {
+  headers: {
+    'Authorization': 'Bearer <token>',
+    'X-Community-Subdomain': 'blackfeet'
+  }
+});
+```
+
+---
+
+## 2. Real-Time DevSync WebSocket
+
+### Connection Lifecycle
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    WebSocket Lifecycle                           │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   [Connect] ──► [Authenticate] ──► [Subscribe] ──► [Listen]     │
+│       │                                               │          │
+│       │           [Reconnect] ◄── [Disconnect]       │          │
+│       │               │                               │          │
+│       └───────────────┴───────────────────────────────┘          │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Connection Setup
+
+```javascript
+class DevSyncClient {
+  constructor(targetUrl) {
+    this.targetUrl = targetUrl;
+    this.ws = null;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 10;
+    this.listeners = new Map();
+  }
+
+  connect() {
+    this.ws = new WebSocket(this.targetUrl);
+    
+    this.ws.onopen = () => {
+      console.log('[DevSync] Connected');
+      this.reconnectAttempts = 0;
+    };
+    
+    this.ws.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      this.handleMessage(message);
+    };
+    
+    this.ws.onclose = () => {
+      console.log('[DevSync] Disconnected');
+      this.scheduleReconnect();
+    };
+    
+    this.ws.onerror = (error) => {
+      console.error('[DevSync] Error:', error);
+    };
+  }
+
+  scheduleReconnect() {
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.error('[DevSync] Max reconnection attempts reached');
+      return;
+    }
+    
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+    this.reconnectAttempts++;
+    
+    setTimeout(() => this.connect(), delay);
+  }
+
+  handleMessage(message) {
+    const listeners = this.listeners.get(message.componentId) || [];
+    listeners.forEach(callback => callback(message.data));
+    
+    // Global listeners
+    const globalListeners = this.listeners.get('*') || [];
+    globalListeners.forEach(callback => callback(message));
+  }
+
+  subscribe(componentId, callback) {
+    if (!this.listeners.has(componentId)) {
+      this.listeners.set(componentId, []);
+    }
+    this.listeners.get(componentId).push(callback);
+  }
+
+  send(message) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        ...message,
+        timestamp: Date.now()
+      }));
+    }
+  }
+}
+```
+
+### Message Types
+
+| Type | Direction | Description |
+|------|-----------|-------------|
+| `media_upload` | NACA → Editor | New media uploaded to library |
+| `media_link` | Bidirectional | Media linked/unlinked from activity |
+| `media_delete` | NACA → Editor | Media file deleted |
+| `media_update` | NACA → Editor | Media approval status changed |
+| `capabilities_update` | NACA → Editor | API version/features changed |
+| `component_update` | Bidirectional | UI component state changed |
+| `state_change` | Bidirectional | Application state changed |
+| `data_sync` | Bidirectional | Data synchronization request |
+
+### Event Handling Examples
+
+```javascript
+const devSync = new DevSyncClient('wss://naca.community/ws/devsync');
+devSync.connect();
+
+// Listen for media library updates
+devSync.subscribe('media-library', (data) => {
+  switch (data.action) {
+    case 'upload':
+      console.log('New media available:', data.filename);
+      refreshMediaList();
+      break;
+    case 'delete':
+      console.log('Media removed:', data.mediaId);
+      removeFromLocalCache(data.mediaId);
+      break;
+    case 'approve':
+    case 'reject':
+      console.log('Media status changed:', data.mediaId, data.action);
+      updateMediaStatus(data.mediaId, data.action);
+      break;
+  }
+});
+
+// Listen for API capability updates
+devSync.subscribe('integration-capabilities', (data) => {
+  if (data.changeType === 'major') {
+    showUpdateRequiredNotification(data);
+  } else if (data.breakingChanges?.length > 0) {
+    showBreakingChangesWarning(data.breakingChanges);
+  }
+});
+
+// Subscribe to all events for debugging
+devSync.subscribe('*', (message) => {
+  console.debug('[DevSync]', message.type, message.data);
+});
+```
+
+---
+
+## 3. Notification System
+
+### Notification Types
+
+| Type | Description | Priority |
+|------|-------------|----------|
+| `approval_status` | Draft approved/rejected | High |
+| `capability_update` | API changes detected | Medium |
+| `media_update` | Media library changes | Low |
+| `community_update` | Community settings changed | Medium |
+
+### Polling for Notifications
+
+```javascript
+class NotificationPoller {
+  constructor(pollInterval = 30000) {
+    this.pollInterval = pollInterval;
+    this.lastChecked = null;
+  }
+
+  async poll() {
+    const response = await fetch('/api/activity-editor/notifications?unreadOnly=true', {
+      headers: { 'Authorization': 'Bearer <token>' }
+    });
+    
+    const { notifications, unreadCount } = await response.json();
+    
+    if (unreadCount > 0) {
+      this.handleNotifications(notifications);
+    }
+    
+    this.lastChecked = new Date();
+  }
+
+  handleNotifications(notifications) {
+    notifications.forEach(notification => {
+      switch (notification.type) {
+        case 'approval_status':
+          this.showApprovalNotification(notification);
+          break;
+        case 'capability_update':
+          this.handleCapabilityUpdate(notification);
+          break;
+      }
+    });
+  }
+
+  start() {
+    this.poll();
+    setInterval(() => this.poll(), this.pollInterval);
+  }
+}
+```
+
+### Marking Notifications as Read
+
+```javascript
+// Mark single notification
+await fetch('/api/activity-editor/notifications/notif_123/read', {
+  method: 'POST',
+  headers: { 'Authorization': 'Bearer <token>' }
+});
+
+// Mark all as read
+await fetch('/api/activity-editor/notifications/read-all', {
+  method: 'POST',
+  headers: { 'Authorization': 'Bearer <token>' }
+});
+```
+
+---
+
+## 4. Capability Polling Strategy
+
+### Efficient Polling with Conditional Requests
+
+```javascript
+class CapabilityPoller {
+  constructor() {
+    this.currentVersion = null;
+    this.etag = null;
+    this.lastModified = null;
+  }
+
+  async checkForUpdates() {
+    const headers = {
+      'Accept': 'application/json'
+    };
+    
+    // Use conditional request headers
+    if (this.etag) {
+      headers['If-None-Match'] = this.etag;
+    }
+    if (this.lastModified) {
+      headers['If-Modified-Since'] = this.lastModified;
+    }
+    
+    const response = await fetch('/api/naca/capabilities', { headers });
+    
+    // 304 = No changes
+    if (response.status === 304) {
+      console.log('[Capabilities] No changes');
+      return null;
+    }
+    
+    // Update cached headers
+    this.etag = response.headers.get('ETag');
+    this.lastModified = response.headers.get('Last-Modified');
+    
+    const data = await response.json();
+    
+    if (this.currentVersion && data.apiVersion !== this.currentVersion) {
+      this.handleVersionChange(this.currentVersion, data.apiVersion);
+    }
+    
+    this.currentVersion = data.apiVersion;
+    return data;
+  }
+
+  handleVersionChange(oldVersion, newVersion) {
+    const [oldMajor] = oldVersion.split('.');
+    const [newMajor] = newVersion.split('.');
+    
+    if (newMajor > oldMajor) {
+      // Major version change - may require client update
+      showMajorUpdateRequired(newVersion);
+    } else {
+      // Minor/patch - notify user of new features
+      showUpdateAvailable(newVersion);
+    }
+  }
+}
+```
+
+### Recommended Polling Intervals
+
+| Endpoint | Interval | Notes |
+|----------|----------|-------|
+| `/capabilities` | 15 minutes | Use conditional requests |
+| `/notifications` | 30 seconds | Only when app is active |
+| `/drafts` | 5 minutes | Sync draft list |
+| `/changelog` | 1 hour | Check for API changes |
+
+---
+
+## 5. Draft Synchronization
+
+### Optimistic Updates
+
+When creating or updating drafts, use optimistic updates for better UX:
+
+```javascript
+async function saveDraft(draftData) {
+  // Optimistically update local state
+  const tempId = 'temp_' + Date.now();
+  addToLocalDrafts({ ...draftData, id: tempId, status: 'saving' });
+  
+  try {
+    const response = await fetch('/api/activity-editor/drafts', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer <token>'
+      },
+      body: JSON.stringify(draftData)
+    });
+    
+    const savedDraft = await response.json();
+    
+    // Replace temp with real ID
+    updateLocalDraft(tempId, savedDraft);
+    
+  } catch (error) {
+    // Rollback on failure
+    removeLocalDraft(tempId);
+    showError('Failed to save draft');
+  }
+}
+```
+
+### Auto-Save Strategy
+
+```javascript
+class DraftAutoSaver {
+  constructor(saveDelay = 2000) {
+    this.saveDelay = saveDelay;
+    this.pendingChanges = null;
+    this.saveTimeout = null;
+  }
+
+  queueSave(draftId, changes) {
+    this.pendingChanges = { draftId, changes };
+    
+    // Debounce saves
+    clearTimeout(this.saveTimeout);
+    this.saveTimeout = setTimeout(() => this.executeSave(), this.saveDelay);
+  }
+
+  async executeSave() {
+    if (!this.pendingChanges) return;
+    
+    const { draftId, changes } = this.pendingChanges;
+    this.pendingChanges = null;
+    
+    try {
+      await fetch(`/api/activity-editor/drafts/${draftId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer <token>'
+        },
+        body: JSON.stringify(changes)
+      });
+      
+      showSaveIndicator('saved');
+    } catch (error) {
+      showSaveIndicator('error');
+      // Re-queue on failure
+      this.queueSave(draftId, changes);
+    }
+  }
+}
+```
+
+---
+
+## 6. Error Recovery
+
+### Retry Strategy with Exponential Backoff
+
+```javascript
+async function fetchWithRetry(url, options, maxRetries = 3) {
+  let lastError;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      
+      if (response.status === 429) {
+        // Rate limited - wait and retry
+        const retryAfter = response.headers.get('Retry-After') || 60;
+        await sleep(retryAfter * 1000);
+        continue;
+      }
+      
+      if (!response.ok && response.status >= 500) {
+        // Server error - retry with backoff
+        await sleep(Math.pow(2, attempt) * 1000);
+        continue;
+      }
+      
+      return response;
+      
+    } catch (error) {
+      lastError = error;
+      await sleep(Math.pow(2, attempt) * 1000);
+    }
+  }
+  
+  throw lastError;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+```
+
+### Offline Support
+
+```javascript
+class OfflineQueue {
+  constructor() {
+    this.queue = JSON.parse(localStorage.getItem('offlineQueue') || '[]');
+  }
+
+  add(request) {
+    this.queue.push({
+      id: Date.now(),
+      ...request,
+      createdAt: new Date().toISOString()
+    });
+    this.persist();
+  }
+
+  persist() {
+    localStorage.setItem('offlineQueue', JSON.stringify(this.queue));
+  }
+
+  async flush() {
+    const pending = [...this.queue];
+    
+    for (const request of pending) {
+      try {
+        await fetch(request.url, {
+          method: request.method,
+          headers: request.headers,
+          body: JSON.stringify(request.body)
+        });
+        
+        // Remove from queue on success
+        this.queue = this.queue.filter(r => r.id !== request.id);
+        this.persist();
+        
+      } catch (error) {
+        console.error('Failed to flush offline request:', error);
+        break; // Stop on first failure
+      }
+    }
+  }
+}
+
+// Listen for online status
+window.addEventListener('online', () => {
+  offlineQueue.flush();
+});
+```
+
+---
+
+## 7. Security Considerations
+
+### Token Handling
+
+```javascript
+// Never store tokens in localStorage for sensitive data
+// Use secure HTTP-only cookies when possible
+
+// For API key auth, use environment variables
+const apiKey = process.env.ACTIVITY_EDITOR_API_KEY;
+
+// Refresh tokens before expiry
+function scheduleTokenRefresh(expiresAt) {
+  const refreshTime = expiresAt - 60000; // 1 minute before expiry
+  setTimeout(refreshToken, refreshTime - Date.now());
+}
+```
+
+### Request Signing (Optional)
+
+For additional security, requests can be signed:
+
+```javascript
+function signRequest(method, path, body, timestamp, secret) {
+  const payload = `${method}|${path}|${timestamp}|${JSON.stringify(body)}`;
+  const signature = crypto.createHmac('sha256', secret)
+    .update(payload)
+    .digest('hex');
+  return signature;
+}
+```
+
+---
+
+## 8. Testing Communication
+
+### Mock WebSocket for Development
+
+```javascript
+class MockDevSync {
+  constructor() {
+    this.listeners = new Map();
+  }
+
+  subscribe(componentId, callback) {
+    if (!this.listeners.has(componentId)) {
+      this.listeners.set(componentId, []);
+    }
+    this.listeners.get(componentId).push(callback);
+  }
+
+  // Simulate incoming message
+  emit(message) {
+    const listeners = this.listeners.get(message.componentId) || [];
+    listeners.forEach(callback => callback(message.data));
+    
+    const globalListeners = this.listeners.get('*') || [];
+    globalListeners.forEach(callback => callback(message));
+  }
+
+  // Simulate media upload event
+  simulateMediaUpload(filename) {
+    this.emit({
+      type: 'media_upload',
+      componentId: 'media-library',
+      data: {
+        mediaId: 'test-' + Date.now(),
+        filename,
+        action: 'upload'
+      }
+    });
+  }
+}
+```
+
+---
+
+## Quick Reference
+
+### Endpoint Base URLs
+
+| Environment | URL |
+|-------------|-----|
+| Production | `https://create.naca.community` |
+| Development | `http://localhost:5000` |
+
+### Required Headers
+
+```
+Content-Type: application/json
+Authorization: Bearer <token>
+X-Community-Subdomain: <subdomain>
+```
+
+### WebSocket URL
+
+```
+wss://create.naca.community/ws/devsync
+```
+
+---
+
+*Last Updated: December 2025*

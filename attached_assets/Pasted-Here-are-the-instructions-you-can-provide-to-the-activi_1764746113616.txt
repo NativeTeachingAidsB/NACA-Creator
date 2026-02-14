@@ -1,0 +1,354 @@
+Here are the instructions you can provide to the activity editor agent for implementing integration with the NACA Activity Editor API:
+
+NACA Activity Editor API Integration Guide
+Base URL
+https://[your-naca-domain]/api/activity-editor
+
+Authentication
+Development: No authentication required
+Production: If ACTIVITY_EDITOR_API_KEY is configured, include header:
+Authorization: Bearer <api_key>
+
+Available Endpoints
+1. List Communities
+GET /api/activity-editor/communities
+
+Returns all active communities.
+
+Response:
+
+{
+  "communities": [
+    {
+      "id": "uuid",
+      "name": "Community Name",
+      "slug": "community-slug",
+      "subdomain": "subdomain",
+      "description": "...",
+      "logoUrl": "...",
+      "isActive": true
+    }
+  ],
+  "total": 3,
+  "apiVersion": "1.0.0"
+}
+
+2. Get Single Community
+GET /api/activity-editor/communities/:communityId
+
+3. List Dictionaries for Community
+GET /api/activity-editor/communities/:communityId/dictionaries
+
+Response:
+
+{
+  "dictionaries": [
+    {
+      "id": "uuid",
+      "name": "Dictionary Name",
+      "communityId": "uuid",
+      "entryCount": 150
+    }
+  ],
+  "total": 1
+}
+
+4. Get Dictionary Entries (Paginated)
+GET /api/activity-editor/dictionaries/:dictionaryId/entries
+
+Query Parameters:
+
+Param	Default	Max	Description
+limit	20	100	Items per page
+offset	0	-	Pagination offset
+search	-	-	Text search filter
+category	-	-	Filter by category
+Response:
+
+{
+  "entries": [
+    {
+      "id": "uuid",
+      "indigenousWord": "nitáá'kaiksi",
+      "englishTranslation": "my friends",
+      "category": "noun",
+      "audioUrl": "...",
+      "imageUrl": "..."
+    }
+  ],
+  "total": 150,
+  "limit": 20,
+  "offset": 0
+}
+
+5. Search Media Files
+GET /api/activity-editor/communities/:communityId/media
+
+Query Parameters:
+
+Param	Description
+limit	Items per page (max 100)
+offset	Pagination offset
+search	Text search
+type	Filter: image, audio, video
+approvalStatus	Filter by approval status
+6. List Activities/Game Datasets
+GET /api/activity-editor/communities/:communityId/activities
+
+Query Parameters:
+
+Param	Description
+type	Activity type filter
+search	Text search
+Implementation Notes
+CORS: API allows cross-origin requests (GET/OPTIONS only, no credentials)
+
+Pagination: Always implement pagination - use limit and offset params
+
+Error Handling: Expect these error responses:
+
+401 - Invalid API key (when auth is enabled)
+404 - Community/resource not found
+500 - Server error
+Community Scoping: All resources are scoped to communities via URL path parameters (RESTful design)
+
+Rate Limiting: Be mindful of request frequency; batch operations where possible
+
+Would you like me to also provide example code snippets for making these API calls?
+
+21 seconds of work
+Yes, please, samples for all access points of content that you will be interacting with in relation to the communities.
+
+Just now
+
+Chose API endpoint code samples
+Here are complete code samples for integrating with all NACA Activity Editor API endpoints:
+
+API Client Setup
+// naca-api-client.ts
+const BASE_URL = 'https://your-naca-domain.replit.app/api/activity-editor';
+const API_KEY = process.env.NACA_API_KEY; // Optional, for production
+async function fetchAPI(endpoint: string, params?: Record<string, string>) {
+  const url = new URL(`${BASE_URL}${endpoint}`);
+  if (params) {
+    Object.entries(params).forEach(([key, value]) => {
+      if (value) url.searchParams.append(key, value);
+    });
+  }
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+  };
+  
+  if (API_KEY) {
+    headers['Authorization'] = `Bearer ${API_KEY}`;
+  }
+  const response = await fetch(url.toString(), { headers });
+  
+  if (!response.ok) {
+    throw new Error(`API Error: ${response.status} ${response.statusText}`);
+  }
+  
+  return response.json();
+}
+
+1. List All Communities
+interface Community {
+  id: string;
+  name: string;
+  slug: string;
+  subdomain: string | null;
+  description: string;
+  logoUrl: string | null;
+  isActive: boolean;
+}
+async function getCommunities(): Promise<Community[]> {
+  const data = await fetchAPI('/communities');
+  return data.communities;
+}
+// Usage
+const communities = await getCommunities();
+console.log('Available communities:', communities.map(c => c.name));
+
+2. Get Single Community
+async function getCommunity(communityId: string): Promise<Community> {
+  const data = await fetchAPI(`/communities/${communityId}`);
+  return data.community;
+}
+// Usage
+const community = await getCommunity('76ef3e19-69d6-44ea-8163-1c7d653e0181');
+console.log('Community:', community.name);
+
+3. List Dictionaries for a Community
+interface Dictionary {
+  id: string;
+  name: string;
+  communityId: string;
+  entryCount: number;
+}
+async function getDictionaries(communityId: string): Promise<Dictionary[]> {
+  const data = await fetchAPI(`/communities/${communityId}/dictionaries`);
+  return data.dictionaries;
+}
+// Usage
+const dictionaries = await getDictionaries('76ef3e19-69d6-44ea-8163-1c7d653e0181');
+console.log('Dictionaries:', dictionaries);
+
+4. Get Dictionary Entries (Paginated)
+interface DictionaryEntry {
+  id: string;
+  indigenousWord: string;
+  englishTranslation: string;
+  category: string;
+  audioUrl: string | null;
+  imageUrl: string | null;
+}
+interface EntriesResponse {
+  entries: DictionaryEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+async function getDictionaryEntries(
+  dictionaryId: string,
+  options?: {
+    limit?: number;
+    offset?: number;
+    search?: string;
+    category?: string;
+  }
+): Promise<EntriesResponse> {
+  const params: Record<string, string> = {};
+  if (options?.limit) params.limit = String(options.limit);
+  if (options?.offset) params.offset = String(options.offset);
+  if (options?.search) params.search = options.search;
+  if (options?.category) params.category = options.category;
+  return await fetchAPI(`/dictionaries/${dictionaryId}/entries`, params);
+}
+// Usage - Get first 50 entries
+const entries = await getDictionaryEntries('dictionary-uuid', { limit: 50 });
+console.log(`Found ${entries.total} entries, showing ${entries.entries.length}`);
+// Usage - Search for specific word
+const searchResults = await getDictionaryEntries('dictionary-uuid', {
+  search: 'water',
+  limit: 20
+});
+// Usage - Paginate through all entries
+async function getAllEntries(dictionaryId: string): Promise<DictionaryEntry[]> {
+  const allEntries: DictionaryEntry[] = [];
+  let offset = 0;
+  const limit = 100;
+  
+  while (true) {
+    const data = await getDictionaryEntries(dictionaryId, { limit, offset });
+    allEntries.push(...data.entries);
+    
+    if (allEntries.length >= data.total) break;
+    offset += limit;
+  }
+  
+  return allEntries;
+}
+
+5. Search Media Files
+interface MediaFile {
+  id: string;
+  filename: string;
+  url: string;
+  type: 'image' | 'audio' | 'video';
+  mimeType: string;
+  approvalStatus: string;
+}
+interface MediaResponse {
+  media: MediaFile[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+async function searchMedia(
+  communityId: string,
+  options?: {
+    limit?: number;
+    offset?: number;
+    search?: string;
+    type?: 'image' | 'audio' | 'video';
+    approvalStatus?: string;
+  }
+): Promise<MediaResponse> {
+  const params: Record<string, string> = {};
+  if (options?.limit) params.limit = String(options.limit);
+  if (options?.offset) params.offset = String(options.offset);
+  if (options?.search) params.search = options.search;
+  if (options?.type) params.type = options.type;
+  if (options?.approvalStatus) params.approvalStatus = options.approvalStatus;
+  return await fetchAPI(`/communities/${communityId}/media`, params);
+}
+// Usage - Get all images
+const images = await searchMedia('community-uuid', { type: 'image', limit: 50 });
+// Usage - Get audio files matching a word
+const audioFiles = await searchMedia('community-uuid', {
+  type: 'audio',
+  search: 'greeting'
+});
+
+6. List Activities/Game Datasets
+interface Activity {
+  id: string;
+  name: string;
+  type: string;
+  description: string;
+  entryCount: number;
+  isPublished: boolean;
+  metadata: Record<string, any>;
+}
+interface ActivitiesResponse {
+  activities: Activity[];
+  total: number;
+}
+async function getActivities(
+  communityId: string,
+  options?: {
+    type?: string;
+    search?: string;
+  }
+): Promise<ActivitiesResponse> {
+  const params: Record<string, string> = {};
+  if (options?.type) params.type = options.type;
+  if (options?.search) params.search = options.search;
+  return await fetchAPI(`/communities/${communityId}/activities`, params);
+}
+// Usage - Get all activities
+const activities = await getActivities('community-uuid');
+// Usage - Filter by type
+const flashcardActivities = await getActivities('community-uuid', {
+  type: 'flashcards'
+});
+
+Complete Workflow Example
+// Example: Load a community's content for the activity editor
+async function loadCommunityContent(communityId: string) {
+  // 1. Get community details
+  const community = await getCommunity(communityId);
+  console.log(`Loading content for: ${community.name}`);
+  // 2. Get all dictionaries
+  const dictionaries = await getDictionaries(communityId);
+  
+  // 3. Get entries from each dictionary
+  const vocabularyByDictionary: Record<string, DictionaryEntry[]> = {};
+  for (const dict of dictionaries) {
+    vocabularyByDictionary[dict.id] = await getAllEntries(dict.id);
+  }
+  // 4. Get available media
+  const images = await searchMedia(communityId, { type: 'image', limit: 100 });
+  const audio = await searchMedia(communityId, { type: 'audio', limit: 100 });
+  // 5. Get existing activities
+  const activities = await getActivities(communityId);
+  return {
+    community,
+    dictionaries,
+    vocabularyByDictionary,
+    media: { images: images.media, audio: audio.media },
+    activities: activities.activities
+  };
+}
+
+These samples cover all the content access points. The activity editor agent can use these to browse communities, fetch vocabulary entries, search for media files, and list existing activities.
